@@ -343,6 +343,12 @@ cargo fmt --check
 cargo deny check        # licenses, advisories, sources (needs cargo-deny)
 ```
 
+CI checks formatting, runs clippy over all targets and builds the release
+binary on Windows; it also checks dependency licences and advisories. It does
+**not** run the test suite — `cargo test` is a local step. Because clippy uses
+`--all-targets` the tests are still compiled and type-checked on every push, so
+they cannot silently rot; they just are not executed.
+
 ## Licensing of dependencies
 
 Every dependency can be used commercially, including in closed-source products.
