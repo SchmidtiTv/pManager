@@ -12,18 +12,27 @@ use clap::{Parser, Subcommand, ValueEnum};
 /// Long help text shown by `pmanager --help`.
 const AFTER_HELP: &str = "\
 Getting started:
-  pmanager folder add C:\\Tools\\Blender   Watch a tool's version folders
-  pmanager list                           See what each folder holds
-  pmanager run --dry-run                  See what would be archived
-  pmanager run                            Archive all but the newest versions
-  pmanager schedule install               Run it daily at 03:00
+  pmanager project add C:\\Code\\my-app   Track a project
+  pmanager list                          See every project at a glance
+  pmanager run                           See what has aged out (changes nothing)
+  pmanager run --yes                     Carry it out
+  pmanager schedule install              …every day at 03:00
+
+How a project ages:
+  active   ──60 days idle──▶  trimmed   node_modules deleted; `npm install` undoes it
+  trimmed  ─180 days idle──▶  archived  compressed to .7z, folder removed
+  archived ──────────────────▶  active  `pmanager restore <PROJECT>`
+
+  Idle means no edited files — dependency installs and builds do not count.
+  A project holding uncommitted or unpushed work is never archived.
 
 Configuration (optional; every key has a default):
   Windows           %APPDATA%\\pmanager\\config.toml
   Linux             ~/.config/pmanager/config.toml
   macOS             ~/Library/Application Support/pmanager/config.toml
 
-  keep_versions, compression_level, compression_threads, data_dir, database
+  trim_days, archive_days, purge_dirs, skip_dirs, archive_dir,
+  install_command, compression_level, compression_threads, data_dir, database
 
 Environment:
   PMANAGER_CONFIG   Path to the config file (overridden by --config)
@@ -134,14 +143,20 @@ impl std::fmt::Display for ColorChoice {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Sweep every registered folder: archive versions beyond the newest few
+    /// Act on projects that have aged out; reports only unless given --yes
     Run(crate::commands::run::Args),
 
-    /// Show every version of every registered folder, unpacked and archived
+    /// Show every tracked project, one line each
     List(crate::commands::list::Args),
 
-    /// Register the folders that `pmanager run` sweeps
-    Folder(crate::commands::folder::Args),
+    /// Show everything known about one project
+    Info(crate::commands::info::Args),
+
+    /// Track and untrack the projects that `pmanager run` watches
+    Project(crate::commands::project::Args),
+
+    /// Extract an archived project and put it back to work
+    Restore(crate::commands::restore::Args),
 
     /// Install or remove the scheduled daily run
     Schedule(crate::commands::schedule::Args),

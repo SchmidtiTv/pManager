@@ -15,6 +15,13 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::lifecycle::{self, Thresholds};
+use crate::scan;
+
+/// Borrow a table of built-in defaults as owned strings.
+fn owned(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
 
 /// Qualifier/organization/application triple used to locate platform
 /// directories (`~/.config/pmanager` on Linux, `%APPDATA%\pmanager` on
@@ -27,9 +34,6 @@ const CONFIG_FILE: &str = "config.toml";
 /// Database file name inside the data directory.
 const DATABASE_FILE: &str = "pmanager.db";
 
-/// How many versions of a tool stay unpacked when `keep_versions` is unset.
-pub const DEFAULT_KEEP_VERSIONS: u32 = 2;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -40,9 +44,28 @@ pub struct Config {
     /// SQLite database file. Defaults to `pmanager.db` inside `data_dir`.
     pub database: Option<PathBuf>,
 
-    /// Versions of each registered folder to keep unpacked. Defaults to
-    /// [`DEFAULT_KEEP_VERSIONS`].
-    pub keep_versions: Option<u32>,
+    /// Days of no edits before a project's dependency trees are deleted.
+    /// Defaults to [`lifecycle::DEFAULT_TRIM_DAYS`].
+    pub trim_days: Option<u32>,
+
+    /// Days of no edits before a project is compressed and its folder removed.
+    /// Defaults to [`lifecycle::DEFAULT_ARCHIVE_DAYS`].
+    pub archive_days: Option<u32>,
+
+    /// Directories that pManager deletes when trimming, and leaves out of an
+    /// archive. Defaults to [`scan::PURGE_DIRS`].
+    pub purge_dirs: Option<Vec<String>>,
+
+    /// Directories not counted when looking for a project's last edit.
+    /// Defaults to [`scan::SKIP_DIRS`].
+    pub skip_dirs: Option<Vec<String>>,
+
+    /// Where archives are written. Defaults to beside the project.
+    pub archive_dir: Option<PathBuf>,
+
+    /// Command `pmanager restore` runs to reinstall dependencies. Defaults to
+    /// `npm install` when the restored project has a `package.json`.
+    pub install_command: Option<Vec<String>>,
 
     /// LZMA2 level used by `pmanager run`. Defaults to
     /// [`crate::archive::DEFAULT_LEVEL`].
@@ -92,19 +115,59 @@ impl Config {
         Ok((config, path))
     }
 
-    /// How many versions to keep unpacked.
+    /// How long a project may sit untouched before each step.
     ///
-    /// Zero is rejected rather than clamped: it would mean "archive every
-    /// version", which is never what someone means by a *keep* count, and
-    /// silently correcting it would hide the typo.
-    pub fn keep_versions(&self) -> Result<u32> {
-        match self.keep_versions {
-            Some(0) => Err(Error::Other(anyhow::anyhow!(
-                "`keep_versions` must be at least 1"
-            ))),
-            Some(keep) => Ok(keep),
-            None => Ok(DEFAULT_KEEP_VERSIONS),
+    /// An `archive_days` below `trim_days` is rejected rather than obeyed:
+    /// with the archive test coming first, it would mean every project skips
+    /// the trim and goes straight to being compressed and deleted. That is a
+    /// typo with consequences, so it fails before anything is touched.
+    ///
+    /// Zero is allowed, and means "as soon as it is a day old" — unusual, but
+    /// it is the only way to say it, and someone deliberately writing `0` in a
+    /// config file is not making a typo the way `keep_versions = 0` was.
+    pub fn thresholds(&self) -> Result<Thresholds> {
+        let thresholds = Thresholds {
+            trim_days: self.trim_days.unwrap_or(lifecycle::DEFAULT_TRIM_DAYS),
+            archive_days: self.archive_days.unwrap_or(lifecycle::DEFAULT_ARCHIVE_DAYS),
+        };
+
+        if thresholds.archive_days < thresholds.trim_days {
+            return Err(Error::Other(anyhow::anyhow!(
+                "`archive_days` ({}) must be at least `trim_days` ({}); \
+                 as written, every project would be archived without ever being trimmed",
+                thresholds.archive_days,
+                thresholds.trim_days
+            )));
         }
+
+        Ok(thresholds)
+    }
+
+    /// Directories deleted when trimming, and kept out of archives.
+    pub fn purge_dirs(&self) -> Vec<String> {
+        self.purge_dirs
+            .clone()
+            .unwrap_or_else(|| owned(scan::PURGE_DIRS))
+    }
+
+    /// Directories ignored when dating a project.
+    ///
+    /// Anything pManager is willing to delete is folded in: a directory that
+    /// can be thrown away cannot also be evidence that the project is alive,
+    /// and a `purge_dirs` entry that someone forgot to also list here would
+    /// quietly keep every project looking fresh.
+    pub fn skip_dirs(&self) -> Vec<String> {
+        let mut dirs = self
+            .skip_dirs
+            .clone()
+            .unwrap_or_else(|| owned(scan::SKIP_DIRS));
+
+        for dir in self.purge_dirs() {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs
     }
 
     /// LZMA2 compression level for `pmanager run`.
@@ -147,6 +210,23 @@ impl Config {
         match &self.database {
             Some(path) => Ok(path.clone()),
             None => Ok(self.data_dir()?.join(DATABASE_FILE)),
+        }
+    }
+
+    /// The command `restore` runs to reinstall dependencies, if any applies.
+    ///
+    /// With nothing configured this is `npm install`, and only for a project
+    /// that has a `package.json` — running a Node install in a Rust project
+    /// would be noise at best. Configure `install_command` to say otherwise;
+    /// an empty list turns the step off entirely.
+    pub fn install_command(&self, project: &Path) -> Option<Vec<String>> {
+        match &self.install_command {
+            Some(command) if command.is_empty() => None,
+            Some(command) => Some(command.clone()),
+            None => project
+                .join("package.json")
+                .is_file()
+                .then(|| vec!["npm".to_string(), "install".to_string()]),
         }
     }
 
@@ -202,13 +282,24 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "data_dir = '/srv/pmanager'\nkeep_versions = 4\ncompression_level = 9\n",
+            "data_dir = '/srv/pmanager'\n\
+             trim_days = 30\n\
+             archive_days = 90\n\
+             purge_dirs = ['node_modules', 'target']\n\
+             compression_level = 9\n",
         )
         .unwrap();
 
         let (loaded, _) = Config::load(Some(&path)).unwrap();
         assert_eq!(loaded.data_dir, Some(PathBuf::from("/srv/pmanager")));
-        assert_eq!(loaded.keep_versions().unwrap(), 4);
+        assert_eq!(
+            loaded.thresholds().unwrap(),
+            Thresholds {
+                trim_days: 30,
+                archive_days: 90
+            }
+        );
+        assert_eq!(loaded.purge_dirs(), ["node_modules", "target"]);
         assert_eq!(loaded.compression_level().unwrap(), 9);
         // Keys the file left out keep their defaults.
         assert_eq!(loaded.compression_threads().unwrap(), 1);
@@ -238,26 +329,74 @@ mod tests {
     }
 
     #[test]
-    fn keep_versions_defaults_and_rejects_zero() {
+    fn thresholds_default_to_the_built_in_pair() {
         assert_eq!(
-            Config::default().keep_versions().unwrap(),
-            DEFAULT_KEEP_VERSIONS
+            Config::default().thresholds().unwrap(),
+            Thresholds {
+                trim_days: lifecycle::DEFAULT_TRIM_DAYS,
+                archive_days: lifecycle::DEFAULT_ARCHIVE_DAYS,
+            }
+        );
+    }
+
+    #[test]
+    fn an_archive_threshold_below_the_trim_one_is_refused() {
+        // Left alone this would archive and delete every stale project without
+        // ever trimming one, which is the opposite of what the pair is for.
+        let inverted = Config {
+            trim_days: Some(90),
+            archive_days: Some(30),
+            ..Config::default()
+        };
+
+        let err = inverted.thresholds().unwrap_err();
+        assert!(err.to_string().contains("at least `trim_days`"), "{err}");
+    }
+
+    #[test]
+    fn anything_purgeable_is_also_ignored_when_dating_a_project() {
+        let config = Config {
+            purge_dirs: Some(vec!["node_modules".into(), "artifacts".into()]),
+            skip_dirs: Some(vec![".git".into()]),
+            ..Config::default()
+        };
+
+        // `artifacts` was named as deletable but not as ignorable; counting it
+        // as a recent edit would keep the project alive forever.
+        let skip = config.skip_dirs();
+        assert!(skip.contains(&"artifacts".to_string()), "{skip:?}");
+        assert!(skip.contains(&"node_modules".to_string()), "{skip:?}");
+        assert!(skip.contains(&".git".to_string()), "{skip:?}");
+    }
+
+    #[test]
+    fn the_install_command_follows_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::default();
+
+        assert_eq!(config.install_command(dir.path()), None);
+
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        assert_eq!(
+            config.install_command(dir.path()),
+            Some(vec!["npm".to_string(), "install".to_string()])
         );
 
-        let explicit = Config {
-            keep_versions: Some(4),
+        let configured = Config {
+            install_command: Some(vec!["pnpm".into(), "install".into()]),
             ..Config::default()
         };
-        assert_eq!(explicit.keep_versions().unwrap(), 4);
+        assert_eq!(
+            configured.install_command(dir.path()),
+            Some(vec!["pnpm".to_string(), "install".to_string()])
+        );
 
-        // Keeping zero versions would archive every copy of a tool, which is
-        // never what the key means — better to complain than to guess.
-        let zero = Config {
-            keep_versions: Some(0),
+        // An empty list is how the step is turned off.
+        let disabled = Config {
+            install_command: Some(Vec::new()),
             ..Config::default()
         };
-        let err = zero.keep_versions().unwrap_err();
-        assert!(err.to_string().contains("at least 1"), "{err}");
+        assert_eq!(disabled.install_command(dir.path()), None);
     }
 
     #[test]

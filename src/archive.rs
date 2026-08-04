@@ -1,12 +1,11 @@
-//! Creating `.7z` archives from a folder.
+//! Creating and extracting `.7z` archives.
 //!
 //! Compression is pure Rust ([`sevenz_rust2`]) — no `7z` binary needs to be
-//! installed. Archives use LZMA2 in solid mode, which is what 7-Zip itself
-//! produces by default.
+//! installed. Archives use LZMA2 in solid mode, as 7-Zip itself does.
 //!
-//! Entry names are relative to the *parent* of the source folder, so
-//! archiving `Blender\4.1` yields an archive containing `4.1/…` — the same
-//! layout as `7z a 4.1.7z 4.1`, so a version restores under its own name.
+//! Entry names are relative to the *parent* of the source folder, so archiving
+//! `Code\my-app` yields an archive containing `my-app/…`; a project comes back
+//! under its own name, whether pManager or 7-Zip unpacks it.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -134,6 +133,116 @@ pub fn create(source: &Path, dest: &Path, options: &Options) -> Result<Summary> 
         source_bytes,
         archive_bytes,
     })
+}
+
+/// Read a finished archive back and confirm it holds what was walked.
+///
+/// Only the 7z header is parsed, so this costs a seek rather than a full
+/// decompression. It catches a truncated archive *before* the source folder is
+/// deleted, which is the only moment the check is worth anything.
+pub fn verify(summary: &Summary) -> Result<()> {
+    let archive = sevenz_rust2::Archive::open(&summary.archive).map_err(|err| {
+        Error::Archive(format!(
+            "`{}` could not be read back after writing ({err}); the source folder was left alone",
+            summary.archive.display()
+        ))
+    })?;
+
+    let files = archive
+        .files
+        .iter()
+        .filter(|entry| !entry.is_directory)
+        .count() as u64;
+
+    if files != summary.file_count {
+        return Err(Error::Archive(format!(
+            "`{}` holds {files} files but `{}` had {}; the source folder was left alone",
+            summary.archive.display(),
+            summary.source.display(),
+            summary.file_count
+        )));
+    }
+
+    Ok(())
+}
+
+/// Extract an archive into `into`, returning the folder it produced.
+///
+/// Staged first, then moved into place as one rename, so a failed extraction
+/// can never half-overwrite anything. An existing destination is refused rather
+/// than merged into.
+pub fn extract(source: &Path, into: &Path) -> Result<PathBuf> {
+    let name = source
+        .file_stem()
+        .ok_or_else(|| Error::Archive(format!("`{}` has no name", source.display())))?
+        .to_string_lossy()
+        .into_owned();
+
+    let destination = into.join(&name);
+    if destination.exists() {
+        return Err(Error::Archive(format!(
+            "`{}` already exists; move it aside or restore elsewhere with --into",
+            destination.display()
+        )));
+    }
+
+    // Beside the destination, not in a temp dir: a cross-filesystem rename is
+    // a copy, and a project can be tens of gigabytes.
+    let staging = into.join(format!(".pmanager-restore-{name}"));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+
+    let result = unpack(source, &staging, &name, &destination);
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// Extract into `staging` and move the result to `destination`.
+fn unpack(source: &Path, staging: &Path, name: &str, destination: &Path) -> Result<PathBuf> {
+    tracing::info!(
+        source = %source.display(),
+        destination = %destination.display(),
+        "extracting archive"
+    );
+
+    sevenz_rust2::decompress_file(source, staging).map_err(|err| {
+        Error::Archive(format!("could not extract `{}`: {err}", source.display()))
+    })?;
+
+    // pManager's archives hold one top-level folder, but a renamed archive
+    // carries the old name, so trust the contents over the file name.
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(staging)?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+
+    if entries.is_empty() {
+        return Err(Error::Archive(format!(
+            "`{}` extracted to nothing",
+            source.display()
+        )));
+    }
+
+    let root = match entries.len() {
+        1 if entries[0].is_dir() => entries.remove(0),
+        // Several entries: the archive holds the contents rather than the
+        // folder, so staging itself is the project.
+        _ => staging.to_path_buf(),
+    };
+
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::rename(&root, destination).map_err(|err| {
+        Error::Archive(format!(
+            "extracted `{}` but could not move it to `{}`: {err}",
+            name,
+            destination.display()
+        ))
+    })?;
+
+    Ok(destination.to_path_buf())
 }
 
 /// Render a byte count for humans: `1.2 MiB`.
