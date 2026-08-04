@@ -65,6 +65,7 @@ fn status(ctx: &Context) -> Result<()> {
         db.schema_version()?,
         Database::target_version()
     )?;
+    writeln!(out, "folders   {}", db.folder_count()?)?;
     writeln!(out, "archives  {}", db.archive_count()?)?;
     Ok(())
 }
