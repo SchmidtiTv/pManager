@@ -186,7 +186,15 @@ mod tests {
     #[test]
     fn default_path_lives_in_the_config_dir() {
         let path = Config::resolve_path(None).unwrap();
-        assert!(path.ends_with("vmanager/config.toml"), "got {path:?}");
+
+        // The layout below the config dir is platform-specific — Windows adds
+        // its own `config` subfolder — so assert on the parts that hold
+        // everywhere rather than on a fixed tail.
+        assert_eq!(path.file_name().unwrap(), "config.toml", "got {path:?}");
+        assert!(
+            path.components().any(|part| part.as_os_str() == "vmanager"),
+            "config path should sit under a vmanager directory, got {path:?}"
+        );
     }
 
     #[test]
