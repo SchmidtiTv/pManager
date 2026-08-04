@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude Sonnet 4.6 - Langdock <noreply@langdock.com>
+Date: Mon, 27 Apr 2026 06:31:51 +0000
+Subject: [PATCH] chore: add conventional commits pre-commit hook
+
+---
+diff --git a/.git/hooks/pre-commit b/.git/hooks/pre-commit
+--- a/.git/hooks/pre-commit
++++ b/.git/hooks/pre-commit
+@@ -0,0 +1,87 @@
++#!/usr/bin/env bash
++# pre-commit hook: enforce Conventional Commits 1.0.0
++
++COMMIT_MSG_FILE="$(git rev-parse --git-dir)/COMMIT_EDITMSG"
++
++# Read the commit message
++commit_msg=$(cat "$COMMIT_MSG_FILE")
++
++# ---------------------------------------------------------------------------
++# Conventional Commits 1.0.0 regex
++#
++# Format:
++#   <type>[optional scope][optional !]: <description>
++#
++#   [optional body]
++#
++#   [optional footer(s)]
++#
++# Rules enforced:
++#   1. First line must match the header pattern.
++#   2. If a body/footer exists, the second line must be blank.
++#   3. Footer "BREAKING CHANGE:" must be followed by a non-empty description.
++# ---------------------------------------------------------------------------
++
++TYPES="build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test"
++
++# Header pattern:
++#   type(scope)!: description   OR   type!: description   OR   type: description
++HEADER_PATTERN="^(${TYPES})(\([^)]+\))?(!)?: .+"
++
++header=$(echo "$commit_msg" | head -n 1)
++
++# --- Rule 1: validate header ---
++if ! echo "$header" | grep -qP "$HEADER_PATTERN"; then
++  echo ""
++  echo "❌  Commit message does not follow Conventional Commits 1.0.0"
++  echo ""
++  echo "    Expected format:"
++  echo "      <type>[optional scope][optional !]: <description>"
++  echo ""
++  echo "    Allowed types: build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test"
++  echo ""
++  echo "    Examples:"
++  echo "      feat: add new login page"
++  echo "      fix(auth): handle null token"
++  echo "      feat!: drop support for Node 14"
++  echo "      docs(readme): update installation steps"
++  echo ""
++  echo "    Your message:"
++  echo "      $header"
++  echo ""
++  exit 1
++fi
++
++# --- Rule 2: if there are more lines, line 2 must be blank ---
++line_count=$(echo "$commit_msg" | wc -l)
++
++if [ "$line_count" -gt 1 ]; then
++  second_line=$(echo "$commit_msg" | sed -n '2p')
++  if [ -n "$second_line" ]; then
++    echo ""
++    echo "❌  Conventional Commits: the second line must be blank (separates header from body)."
++    echo ""
++    echo "    Your second line: \"$second_line\""
++    echo ""
++    exit 1
++  fi
++fi
++
++# --- Rule 3: validate BREAKING CHANGE footer ---
++# If "BREAKING CHANGE:" appears in the footer section it must have a description.
++footer_section=$(echo "$commit_msg" | awk 'NR>2')  # everything after line 2
++
++if echo "$footer_section" | grep -qP "^BREAKING CHANGE:"; then
++  # Check that the value after "BREAKING CHANGE:" is non-empty
++  bc_value=$(echo "$footer_section" | grep -P "^BREAKING CHANGE:" | sed 's/^BREAKING CHANGE://' | head -n 1)
++  bc_value_trimmed=$(echo "$bc_value" | xargs)  # trim whitespace
++  if [ -z "$bc_value_trimmed" ]; then
++    echo ""
++    echo "❌  Conventional Commits: 'BREAKING CHANGE:' footer must include a description."
++    echo "    Example: BREAKING CHANGE: \`config.extends\` key now extends other config files"
++    echo ""
++    exit 1
++  fi
++fi
++
++exit 0
+
+-- 
+2.39.0
