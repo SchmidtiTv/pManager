@@ -194,9 +194,11 @@ fn logs_go_to_stderr_not_stdout() {
 fn isolated() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.toml");
+    // A TOML *literal* string (single quotes) — a basic string would treat the
+    // backslashes in a Windows path as escape sequences and fail to parse.
     std::fs::write(
         &config,
-        format!("data_dir = \"{}\"\n", dir.path().join("data").display()),
+        format!("data_dir = '{}'\n", dir.path().join("data").display()),
     )
     .unwrap();
     (dir, config)

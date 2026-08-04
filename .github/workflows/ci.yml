@@ -10,9 +10,13 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Windows is the only platform vManager targets, so it is the only platform
+  # anything is compiled or run on. This job replaces the old per-OS build
+  # matrix: it already compiles the whole crate and runs the test suite, which
+  # is strictly more than a `cargo build` smoke test was checking.
   check:
     name: Format, lint and test
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -31,6 +35,11 @@ jobs:
       - name: Test
         run: cargo test --all-features
 
+      - name: Smoke test the release binary
+        run: cargo run --release -- --version
+
+  # Reads Cargo metadata only — it never builds or runs vManager, so the
+  # runner OS is irrelevant and the cheapest one is fine.
   deny:
     name: Licenses and advisories
     runs-on: ubuntu-latest
@@ -39,18 +48,3 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses advisories bans sources
-
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
-      - name: Smoke test the binary
-        run: cargo run --release -- --version

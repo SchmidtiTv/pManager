@@ -194,8 +194,8 @@ cargo deny check        # licenses, advisories, sources (needs cargo-deny)
 ## Licensing of dependencies
 
 Every dependency can be used commercially, including in closed-source products.
-The tree is MIT, Apache-2.0, BSD, ISC, Zlib, Unlicense, CC0 and Unicode-3.0; no
-crate *requires* GPL, LGPL or AGPL terms. (A few are multi-licensed and merely
+The tree resolves to MIT, Apache-2.0, MPL-2.0, Unicode-3.0 and Zlib; no crate
+*requires* GPL, LGPL or AGPL terms. (A few are multi-licensed and merely
 *offer* a copyleft option alongside a permissive one — `r-efi`, for instance,
 is "MIT OR Apache-2.0 OR LGPL-2.1-or-later", and taking MIT is enough.)
 
@@ -214,5 +214,11 @@ and license notices when distributing binaries.
 
 `deny.toml` encodes this as an allowlist and CI runs `cargo deny check`, so a
 dependency arriving under a license outside that set fails the build instead of
-slipping in unnoticed. Tighten the list there if a stricter policy is needed;
-removing MPL-2.0 additionally means replacing `directories`.
+slipping in unnoticed. The list holds only the licenses actually in use, so a
+new one is a deliberate decision rather than something pre-approved. Dropping
+MPL-2.0 from it means replacing `directories`.
+
+vManager itself has no license declared yet — that is a call for the repository
+owner. Until one is chosen the crate is marked `publish = false` and cargo-deny
+skips it (`private.ignore`); setting `license` in `Cargo.toml` afterwards lets
+that setting go away.
