@@ -120,6 +120,15 @@ impl std::fmt::Display for ColorChoice {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Sweep every registered folder: archive versions beyond the newest few
+    Run(crate::commands::run::Args),
+
+    /// Register the folders that `vmanager run` sweeps
+    Folder(crate::commands::folder::Args),
+
+    /// Install or remove the scheduled daily run
+    Schedule(crate::commands::schedule::Args),
+
     /// Create and track .7z archives
     Archive(crate::commands::archive::Args),
 

@@ -265,7 +265,11 @@ fn is_excluded(path: &Path, root: &Path, exclude: &[String]) -> bool {
 }
 
 /// Resolve `path` and confirm it is a directory we can archive.
-fn canonical_dir(path: &Path) -> Result<PathBuf> {
+///
+/// Also the way a folder is spelled before it goes into the database, so that
+/// `.\Tools\Blender` and `C:\Tools\Blender` are recognised as the same
+/// registration.
+pub fn canonical_dir(path: &Path) -> Result<PathBuf> {
     let canonical = path.canonicalize().map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             Error::NotFound {
