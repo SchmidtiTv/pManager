@@ -18,6 +18,7 @@ use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::archive::EXTENSION;
 use crate::error::{Error, Result};
 
 /// A version number extracted from a folder name.
@@ -180,6 +181,64 @@ pub fn list(root: &Path) -> Result<Listing> {
     }
 
     Ok(sort(candidates))
+}
+
+/// One archived version: a `<name>.7z` sitting where its folder used to be.
+#[derive(Debug, Clone)]
+pub struct ArchivedVersion {
+    /// Full path to the archive.
+    pub path: PathBuf,
+    /// The version's name, with the `.7z` extension stripped back off — so an
+    /// archived `4.1` reads as `4.1`, the same as when it was a folder.
+    pub name: String,
+    /// The version parsed from [`Self::name`], when it has one.
+    pub version: Option<Version>,
+    /// Size of the archive on disk.
+    pub bytes: u64,
+}
+
+/// List the archives directly under `root`, oldest first.
+///
+/// These are the versions that have already been swept. Read from the
+/// filesystem rather than the database, so an archive still shows up after the
+/// database is deleted — the files are what actually exist.
+pub fn archived(root: &Path) -> Result<Vec<ArchivedVersion>> {
+    if !root.is_dir() {
+        return Err(Error::NotFound {
+            kind: "folder",
+            name: root.display().to_string(),
+        });
+    }
+
+    let mut archives = Vec::new();
+
+    for entry in std::fs::read_dir(root)? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some(EXTENSION) {
+            continue;
+        }
+
+        let name = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+
+        archives.push(ArchivedVersion {
+            version: Version::parse(&name),
+            bytes: entry.metadata().map(|meta| meta.len()).unwrap_or(0),
+            path,
+            name,
+        });
+    }
+
+    archives.sort_by(|a, b| a.version.cmp(&b.version).then_with(|| a.name.cmp(&b.name)));
+    Ok(archives)
 }
 
 /// Split the candidates into versions and ignored folders, oldest first.
@@ -373,6 +432,33 @@ mod tests {
 
         let listing = list(dir.path()).unwrap();
         assert_eq!(names(&listing), ["1.0"]);
+    }
+
+    #[test]
+    fn archives_are_listed_oldest_first_with_their_size() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("4.10.7z"), b"newer archive").unwrap();
+        std::fs::write(dir.path().join("4.9.7z"), b"older").unwrap();
+        // Not archives: a live version, and an unrelated file.
+        std::fs::create_dir(dir.path().join("4.11")).unwrap();
+        std::fs::write(dir.path().join("notes.txt"), b"hello").unwrap();
+
+        let archived = archived(dir.path()).unwrap();
+
+        let names: Vec<&str> = archived.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["4.9", "4.10"]);
+        assert_eq!(archived[0].bytes, 5);
+        assert_eq!(archived[1].bytes, 13);
+        // The name is the version, with the extension stripped back off.
+        assert_eq!(archived[1].version.as_ref().unwrap().parts(), &[4, 10]);
+    }
+
+    #[test]
+    fn a_folder_with_no_archives_lists_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("1.0")).unwrap();
+
+        assert!(archived(dir.path()).unwrap().is_empty());
     }
 
     #[test]

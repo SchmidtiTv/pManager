@@ -30,12 +30,9 @@ enum FolderCommand {
         keep: Option<u32>,
     },
 
-    /// List the registered folders and what they currently hold
-    List,
-
     /// Unregister a folder; nothing on disk is touched
     Remove {
-        /// A folder shown by `vmanager folder list`
+        /// A folder shown by `vmanager list`
         #[arg(value_name = "FOLDER")]
         folder: PathBuf,
     },
@@ -44,7 +41,6 @@ enum FolderCommand {
 pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     match &args.command {
         FolderCommand::Add { folder, keep } => add(ctx, folder, *keep),
-        FolderCommand::List => list(ctx),
         FolderCommand::Remove { folder } => remove(ctx, folder),
     }
 }
@@ -78,54 +74,6 @@ fn add(ctx: &Context, folder: &Path, keep: Option<u32>) -> Result<()> {
             )?;
         }
         Err(err) => writeln!(out, "  could not read it yet: {err}")?,
-    }
-
-    Ok(())
-}
-
-fn list(ctx: &Context) -> Result<()> {
-    let db = ctx.open_database()?;
-    let folders = db.folders()?;
-    let default_keep = ctx.config()?.keep_versions()?;
-
-    let mut out = std::io::stdout().lock();
-    if folders.is_empty() {
-        if !ctx.is_quiet() {
-            writeln!(out, "no folders registered yet")?;
-            writeln!(out, "register one with `vmanager folder add <FOLDER>`")?;
-        }
-        return Ok(());
-    }
-
-    let width = folders
-        .iter()
-        .map(|folder| folder.path.display().to_string().chars().count())
-        .max()
-        .unwrap_or(0);
-
-    for folder in &folders {
-        let keep = folder.keep.unwrap_or(default_keep);
-        let archived = db.archive_count_for_folder(folder.id)?;
-
-        // A registered folder can disappear — a drive gets unplugged, a tool
-        // is uninstalled — so a missing one is reported, not fatal.
-        let state = match version::list(&folder.path) {
-            Ok(listing) => {
-                let pending = listing.versions.len().saturating_sub(keep as usize);
-                let mut state = format!("{} unpacked", listing.versions.len());
-                if pending > 0 {
-                    state.push_str(&format!(", {pending} to archive"));
-                }
-                state
-            }
-            Err(_) => "unavailable".to_string(),
-        };
-
-        writeln!(
-            out,
-            "{:<width$}  keep {keep}  {state}, {archived} archived",
-            folder.path.display(),
-        )?;
     }
 
     Ok(())
