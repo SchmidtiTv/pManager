@@ -1,8 +1,8 @@
-//! `vmanager schedule` — the daily run, registered with Windows Task
+//! `pmanager schedule` — the daily run, registered with Windows Task
 //! Scheduler.
 //!
-//! vManager stays a one-shot command: there is no resident daemon to keep
-//! alive or to restart after a reboot. `schedule install` hands `vmanager run`
+//! pManager stays a one-shot command: there is no resident daemon to keep
+//! alive or to restart after a reboot. `schedule install` hands `pmanager run`
 //! to `schtasks.exe`, which is the component Windows already has for exactly
 //! this, and which survives reboots and reports a failed run in its own
 //! history.
@@ -18,7 +18,7 @@ use crate::commands::Context;
 use crate::error::{Error, Result};
 
 /// Task Scheduler name used when `--name` is not given.
-const DEFAULT_TASK_NAME: &str = "vManager daily sweep";
+const DEFAULT_TASK_NAME: &str = "pManager daily sweep";
 
 /// Time of day the sweep runs when `--at` is not given.
 const DEFAULT_TIME: &str = "03:00";
@@ -31,7 +31,7 @@ pub struct Args {
 
 #[derive(Debug, clap::Subcommand)]
 enum ScheduleCommand {
-    /// Register a daily `vmanager run` with Task Scheduler
+    /// Register a daily `pmanager run` with Task Scheduler
     Install {
         /// Time of day to run, as HH:MM
         #[arg(long, value_name = "HH:MM", default_value = DEFAULT_TIME, value_parser = parse_time)]
@@ -96,7 +96,7 @@ fn install(ctx: &Context, at: &str, name: &str, force: bool) -> Result<()> {
         let mut out = std::io::stdout().lock();
         writeln!(out, "scheduled `{name}` to run daily at {at}")?;
         writeln!(out, "  {}", exe.display())?;
-        writeln!(out, "remove it with `vmanager schedule uninstall`")?;
+        writeln!(out, "remove it with `pmanager schedule uninstall`")?;
     }
     Ok(())
 }
@@ -207,8 +207,8 @@ fn schtasks(arguments: &[String]) -> Result<String> {
 #[cfg(not(windows))]
 fn schtasks(_arguments: &[String]) -> Result<String> {
     Err(Error::Other(anyhow::anyhow!(
-        "`vmanager schedule` needs Windows Task Scheduler; on this platform run \
-         `vmanager run` from cron or a systemd timer instead"
+        "`pmanager schedule` needs Windows Task Scheduler; on this platform run \
+         `pmanager run` from cron or a systemd timer instead"
     )))
 }
 
@@ -218,19 +218,19 @@ mod tests {
 
     #[test]
     fn the_scheduled_command_quotes_the_executable() {
-        let command = task_command(Path::new(r"C:\Program Files\vmanager\vmanager.exe"), None);
-        assert_eq!(command, r#""C:\Program Files\vmanager\vmanager.exe" run"#);
+        let command = task_command(Path::new(r"C:\Program Files\pmanager\pmanager.exe"), None);
+        assert_eq!(command, r#""C:\Program Files\pmanager\pmanager.exe" run"#);
     }
 
     #[test]
     fn an_explicit_config_travels_with_the_task() {
         let command = task_command(
-            Path::new(r"C:\tools\vmanager.exe"),
-            Some(Path::new(r"D:\config\vmanager.toml")),
+            Path::new(r"C:\tools\pmanager.exe"),
+            Some(Path::new(r"D:\config\pmanager.toml")),
         );
         assert_eq!(
             command,
-            r#""C:\tools\vmanager.exe" run --config "D:\config\vmanager.toml""#
+            r#""C:\tools\pmanager.exe" run --config "D:\config\pmanager.toml""#
         );
     }
 

@@ -1,7 +1,7 @@
 //! The sweep: keep the newest few versions of a tool unpacked and compress the
 //! rest.
 //!
-//! This is what `vmanager run` does every day. For one registered folder the
+//! This is what `pmanager run` does every day. For one registered folder the
 //! steps are:
 //!
 //! 1. list the version folders under it, oldest first ([`crate::version`]),
