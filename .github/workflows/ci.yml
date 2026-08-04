@@ -31,6 +31,15 @@ jobs:
       - name: Test
         run: cargo test --all-features
 
+  deny:
+    name: Licenses and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses advisories bans sources
+
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
