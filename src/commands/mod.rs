@@ -4,10 +4,10 @@
 //! [`crate::cli::Command`] embeds — and a `run` function taking the shared
 //! [`Context`].
 
-pub mod archive;
-pub mod completions;
-pub mod config;
-pub mod db;
+pub mod folder;
+pub mod list;
+pub mod run;
+pub mod schedule;
 
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};

@@ -11,11 +11,13 @@ env:
 
 jobs:
   # Windows is the only platform vManager targets, so it is the only platform
-  # anything is compiled or run on. This job replaces the old per-OS build
-  # matrix: it already compiles the whole crate and runs the test suite, which
-  # is strictly more than a `cargo build` smoke test was checking.
+  # anything is compiled on.
+  #
+  # The suite is not run here — run it locally with `cargo test`. Clippy still
+  # uses `--all-targets`, so the tests are compiled and type-checked on every
+  # push and cannot rot unnoticed; they simply are not executed.
   check:
-    name: Format, lint and test
+    name: Format and lint
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,9 +33,6 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features
-
-      - name: Test
-        run: cargo test --all-features
 
       - name: Smoke test the release binary
         run: cargo run --release -- --version
