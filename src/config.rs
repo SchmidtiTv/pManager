@@ -4,7 +4,7 @@
 //!
 //! 1. the defaults in [`Config`],
 //! 2. the TOML config file,
-//! 3. environment variables (`VMANAGER_*`, declared in [`crate::cli`]),
+//! 3. environment variables (`PMANAGER_*`, declared in [`crate::cli`]),
 //! 4. command line flags.
 //!
 //! A missing config file is not an error — it simply leaves the defaults in
@@ -17,15 +17,15 @@ use serde::Deserialize;
 use crate::error::{Error, Result};
 
 /// Qualifier/organization/application triple used to locate platform
-/// directories (`~/.config/vmanager` on Linux, `%APPDATA%\vmanager` on
-/// Windows, `~/Library/Application Support/vmanager` on macOS).
-const APP_NAME: &str = "vmanager";
+/// directories (`~/.config/pmanager` on Linux, `%APPDATA%\pmanager` on
+/// Windows, `~/Library/Application Support/pmanager` on macOS).
+const APP_NAME: &str = "pmanager";
 
 /// File name looked up inside the platform config directory.
 const CONFIG_FILE: &str = "config.toml";
 
 /// Database file name inside the data directory.
-const DATABASE_FILE: &str = "vmanager.db";
+const DATABASE_FILE: &str = "pmanager.db";
 
 /// How many versions of a tool stay unpacked when `keep_versions` is unset.
 pub const DEFAULT_KEEP_VERSIONS: u32 = 2;
@@ -33,27 +33,27 @@ pub const DEFAULT_KEEP_VERSIONS: u32 = 2;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Directory where vManager keeps its data. Defaults to the platform data
+    /// Directory where pManager keeps its data. Defaults to the platform data
     /// directory when unset.
     pub data_dir: Option<PathBuf>,
 
-    /// SQLite database file. Defaults to `vmanager.db` inside `data_dir`.
+    /// SQLite database file. Defaults to `pmanager.db` inside `data_dir`.
     pub database: Option<PathBuf>,
 
     /// Versions of each registered folder to keep unpacked. Defaults to
     /// [`DEFAULT_KEEP_VERSIONS`].
     pub keep_versions: Option<u32>,
 
-    /// LZMA2 level used by `vmanager run`. Defaults to
+    /// LZMA2 level used by `pmanager run`. Defaults to
     /// [`crate::archive::DEFAULT_LEVEL`].
     pub compression_level: Option<u32>,
 
-    /// Compression threads used by `vmanager run`. Defaults to 1.
+    /// Compression threads used by `pmanager run`. Defaults to 1.
     pub compression_threads: Option<u32>,
 }
 
 impl Config {
-    /// The config file path, honouring an explicit `--config`/`VMANAGER_CONFIG`
+    /// The config file path, honouring an explicit `--config`/`PMANAGER_CONFIG`
     /// override before falling back to the platform config directory.
     pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf> {
         match explicit {
@@ -107,7 +107,7 @@ impl Config {
         }
     }
 
-    /// LZMA2 compression level for `vmanager run`.
+    /// LZMA2 compression level for `pmanager run`.
     pub fn compression_level(&self) -> Result<u32> {
         match self.compression_level {
             Some(level) if level > crate::archive::MAX_LEVEL => Err(Error::Other(anyhow::anyhow!(
@@ -120,7 +120,7 @@ impl Config {
         }
     }
 
-    /// Compression threads for `vmanager run`.
+    /// Compression threads for `pmanager run`.
     pub fn compression_threads(&self) -> Result<u32> {
         match self.compression_threads {
             Some(0) => Err(Error::Other(anyhow::anyhow!(
@@ -165,10 +165,10 @@ mod tests {
 
     #[test]
     fn explicit_path_wins_over_platform_default() {
-        let explicit = Path::new("/etc/vmanager/custom.toml");
+        let explicit = Path::new("/etc/pmanager/custom.toml");
         assert_eq!(
             Config::resolve_path(Some(explicit)).unwrap(),
-            PathBuf::from("/etc/vmanager/custom.toml")
+            PathBuf::from("/etc/pmanager/custom.toml")
         );
     }
 
@@ -181,8 +181,8 @@ mod tests {
         // everywhere rather than on a fixed tail.
         assert_eq!(path.file_name().unwrap(), "config.toml", "got {path:?}");
         assert!(
-            path.components().any(|part| part.as_os_str() == "vmanager"),
-            "config path should sit under a vmanager directory, got {path:?}"
+            path.components().any(|part| part.as_os_str() == "pmanager"),
+            "config path should sit under a pmanager directory, got {path:?}"
         );
     }
 
@@ -202,12 +202,12 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
-            "data_dir = '/srv/vmanager'\nkeep_versions = 4\ncompression_level = 9\n",
+            "data_dir = '/srv/pmanager'\nkeep_versions = 4\ncompression_level = 9\n",
         )
         .unwrap();
 
         let (loaded, _) = Config::load(Some(&path)).unwrap();
-        assert_eq!(loaded.data_dir, Some(PathBuf::from("/srv/vmanager")));
+        assert_eq!(loaded.data_dir, Some(PathBuf::from("/srv/pmanager")));
         assert_eq!(loaded.keep_versions().unwrap(), 4);
         assert_eq!(loaded.compression_level().unwrap(), 9);
         // Keys the file left out keep their defaults.
@@ -217,17 +217,17 @@ mod tests {
     #[test]
     fn database_defaults_to_a_file_inside_the_data_dir() {
         let config = Config {
-            data_dir: Some(PathBuf::from("/srv/vmanager")),
+            data_dir: Some(PathBuf::from("/srv/pmanager")),
             database: None,
             ..Config::default()
         };
         assert_eq!(
             config.database_path().unwrap(),
-            PathBuf::from("/srv/vmanager/vmanager.db")
+            PathBuf::from("/srv/pmanager/pmanager.db")
         );
 
         let explicit = Config {
-            data_dir: Some(PathBuf::from("/srv/vmanager")),
+            data_dir: Some(PathBuf::from("/srv/pmanager")),
             database: Some(PathBuf::from("/elsewhere/db.sqlite")),
             ..Config::default()
         };

@@ -1,4 +1,4 @@
-//! vManager — library half of the `vmanager` command line application.
+//! pManager — library half of the `pmanager` command line application.
 //!
 //! The binary in `src/main.rs` is deliberately thin: it parses arguments,
 //! calls [`run`] and turns the result into an exit code. Keeping the logic in

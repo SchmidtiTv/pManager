@@ -1,4 +1,4 @@
-//! `vmanager list` — what each registered folder currently holds.
+//! `pmanager list` — what each registered folder currently holds.
 //!
 //! One line per version, oldest first, whether it is still unpacked or has
 //! already been swept into a `.7z`. The listing is built from the filesystem;
@@ -84,7 +84,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     if folders.is_empty() {
         if !ctx.is_quiet() {
             writeln!(out, "no folders registered yet")?;
-            writeln!(out, "register one with `vmanager folder add <FOLDER>`")?;
+            writeln!(out, "register one with `pmanager folder add <FOLDER>`")?;
         }
         return Ok(());
     }
