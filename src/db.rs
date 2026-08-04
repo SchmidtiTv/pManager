@@ -5,17 +5,26 @@
 //! via `rusqlite`'s `bundled` feature, so there is no system dependency and no
 //! version skew between machines.
 //!
+//! One table: `projects`. It records where each project is in its life, when
+//! it got there, and where an archived one's `.7z` went — the only part that
+//! cannot be re-derived from the disk.
+//!
+//! The database is a record, not the source of truth. Deleting it loses the
+//! registrations, not a single project.
+//!
 //! Schema changes are additive migrations tracked by SQLite's own
 //! `user_version` pragma: append to [`MIGRATIONS`], never edit a shipped
 //! entry, and every existing database upgrades itself on the next open.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::archive::Summary;
 use crate::error::{Error, Result};
+use crate::lifecycle::State;
+use crate::scan;
 
 /// How long to wait for another process to release a write lock.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -36,8 +45,8 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX archives_created_at ON archives (created_at DESC);
     "#,
-    // v2 — the registry of folders `pmanager run` sweeps, and the link from an
-    // archive back to the folder whose version it holds.
+    // v2 — the registry of folders the version sweep walked, and the link from
+    // an archive back to the folder whose version it held.
     r#"
     CREATE TABLE folders (
         id       INTEGER PRIMARY KEY,
@@ -51,37 +60,76 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX archives_folder_id ON archives (folder_id);
     "#,
+    // v3 — pManager manages projects rather than tool versions. The old tables
+    // described versions of a tool, a concept this build no longer has, so
+    // there is nothing to carry across. Timestamps are unix seconds here; see
+    // `scan::to_epoch`.
+    r#"
+    DROP TABLE archives;
+    DROP TABLE folders;
+
+    CREATE TABLE projects (
+        id            INTEGER PRIMARY KEY,
+        path          TEXT    NOT NULL UNIQUE,
+        name          TEXT    NOT NULL,
+        state         TEXT    NOT NULL DEFAULT 'active'
+                              CHECK (state IN ('active', 'trimmed', 'archived')),
+        added_at      INTEGER NOT NULL,
+        trimmed_at    INTEGER,
+        archived_at   INTEGER,
+        restored_at   INTEGER,
+        freed_bytes   INTEGER NOT NULL DEFAULT 0 CHECK (freed_bytes >= 0),
+        archive_path  TEXT,
+        archive_bytes INTEGER CHECK (archive_bytes  IS NULL OR archive_bytes  >= 0),
+        source_bytes  INTEGER CHECK (source_bytes   IS NULL OR source_bytes   >= 0),
+        file_count    INTEGER CHECK (file_count     IS NULL OR file_count     >= 0)
+    );
+
+    CREATE INDEX projects_state ON projects (state);
+    "#,
 ];
 
-/// What the `archives` table remembers about one `.7z`.
-///
-/// The size of the archive is on disk to be read; what only the database knows
-/// is what went *into* it — how large the version was before compression, and
-/// how many files it held. That is what `pmanager list` reports.
+/// Where an archived project went, and what it held. The size of the `.7z` is
+/// on disk to be read; what went *into* it is only known here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveRecord {
-    /// The folder that was compressed.
-    pub source_path: PathBuf,
+    pub path: PathBuf,
+    /// Size of the archive when it was written.
+    pub bytes: u64,
+    /// Size of the project before compression.
+    pub source_bytes: u64,
     /// Files stored in the archive.
     pub file_count: u64,
-    /// Size of those files before compression.
-    pub source_bytes: u64,
-    /// Size of the archive when it was written.
-    pub archive_bytes: u64,
-    /// UTC, ISO-8601 (`2026-08-04T11:30:00Z`), written by SQLite.
-    pub created_at: String,
 }
 
-/// One row of the `folders` table: a folder `pmanager run` watches.
+/// One row of the `projects` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FolderRecord {
+pub struct ProjectRecord {
     pub id: i64,
-    /// The folder holding one tool's version subfolders.
+    /// The project folder. Still the identity of an archived project, even
+    /// though nothing is there any more — it is where `restore` puts it back.
     pub path: PathBuf,
-    /// How many versions to keep unpacked, overriding the configured default.
-    pub keep: Option<u32>,
-    /// UTC, ISO-8601, written by SQLite.
-    pub added_at: String,
+    /// Display name: `package.json`'s `name` when there was one, else the
+    /// folder name.
+    pub name: String,
+    pub state: State,
+    /// Unix seconds; see the note on migration v3.
+    pub added_at: i64,
+    pub trimmed_at: Option<i64>,
+    pub archived_at: Option<i64>,
+    pub restored_at: Option<i64>,
+    /// Bytes reclaimed by trimming, across every run.
+    pub freed_bytes: u64,
+    /// Present only while the project is archived.
+    pub archive: Option<ArchiveRecord>,
+}
+
+impl ProjectRecord {
+    /// The last time pManager itself saw this project used. Feeds
+    /// [`crate::lifecycle::decide`] as a floor under the idle clock.
+    pub fn active_since(&self) -> Option<SystemTime> {
+        self.restored_at.map(scan::from_epoch)
+    }
 }
 
 /// An open connection to the pManager database.
@@ -138,120 +186,143 @@ impl Database {
         MIGRATIONS.len() as u32
     }
 
-    /// Record a finished archive, attributing it to a registered folder.
-    pub fn record_archive(&self, summary: &Summary, folder_id: Option<i64>) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO archives (source_path, archive_path, file_count, source_bytes, archive_bytes, folder_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT (archive_path) DO UPDATE SET
-                 source_path   = excluded.source_path,
-                 file_count    = excluded.file_count,
-                 source_bytes  = excluded.source_bytes,
-                 archive_bytes = excluded.archive_bytes,
-                 folder_id     = excluded.folder_id,
-                 created_at    = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
-            params![
-                summary.source.to_string_lossy(),
-                summary.archive.to_string_lossy(),
-                // SQLite integers are signed; the CHECK constraints keep
-                // these non-negative on the way back out.
-                summary.file_count as i64,
-                summary.source_bytes as i64,
-                summary.archive_bytes as i64,
-                folder_id,
-            ],
-        )?;
-
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// What is known about the archive at `path`, if anything.
-    ///
-    /// Returns `None` rather than an error for an archive with no record: a
-    /// `.7z` sitting next to a version folder is real whether or not this
-    /// database was the one that wrote it, so callers report what they can.
-    pub fn archive_at(&self, path: &Path) -> Result<Option<ArchiveRecord>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT source_path, file_count, source_bytes, archive_bytes, created_at
-                   FROM archives WHERE archive_path = ?1",
-                [path.to_string_lossy()],
-                |row| {
-                    Ok(ArchiveRecord {
-                        source_path: PathBuf::from(row.get::<_, String>(0)?),
-                        file_count: row.get::<_, i64>(1)? as u64,
-                        source_bytes: row.get::<_, i64>(2)? as u64,
-                        archive_bytes: row.get::<_, i64>(3)? as u64,
-                        created_at: row.get(4)?,
-                    })
-                },
-            )
-            .optional()?)
-    }
-
-    /// Register a folder for `pmanager run` to sweep.
-    ///
-    /// Registering a folder that is already known updates its `keep` override
-    /// instead of failing; the returned flag says which happened, so the
-    /// command can report "registered" or "updated" accurately.
-    pub fn add_folder(&self, path: &Path, keep: Option<u32>) -> Result<(i64, bool)> {
-        let existing = self.folder_by_path(path)?;
+    /// Track a project. Re-adding a tracked one refreshes its name; the flag
+    /// says which happened.
+    pub fn add_project(&self, path: &Path, name: &str) -> Result<(ProjectRecord, bool)> {
+        let existing = self.project_by_path(path)?;
 
         self.conn.execute(
-            "INSERT INTO folders (path, keep) VALUES (?1, ?2)
-             ON CONFLICT (path) DO UPDATE SET keep = excluded.keep",
-            params![path.to_string_lossy(), keep],
+            "INSERT INTO projects (path, name, added_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT (path) DO UPDATE SET name = excluded.name",
+            params![path.to_string_lossy(), name, scan::now_epoch()],
         )?;
 
-        match existing {
-            Some(record) => Ok((record.id, false)),
-            None => Ok((self.conn.last_insert_rowid(), true)),
-        }
+        let record = self
+            .project_by_path(path)?
+            .ok_or_else(|| Error::Database("project vanished after being inserted".into()))?;
+        Ok((record, existing.is_none()))
     }
 
-    /// Every registered folder, in registration order.
-    pub fn folders(&self) -> Result<Vec<FolderRecord>> {
+    /// Every tracked project, by name.
+    pub fn projects(&self) -> Result<Vec<ProjectRecord>> {
         let mut statement = self
             .conn
-            .prepare("SELECT id, path, keep, added_at FROM folders ORDER BY id")?;
+            .prepare(&format!("{SELECT} ORDER BY name COLLATE NOCASE, path"))?;
 
-        let rows = statement.query_map([], row_to_folder)?;
+        let rows = statement.query_map([], row_to_project)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Look up a registered folder by path.
-    pub fn folder_by_path(&self, path: &Path) -> Result<Option<FolderRecord>> {
+    /// Look up a tracked project by path.
+    pub fn project_by_path(&self, path: &Path) -> Result<Option<ProjectRecord>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, path, keep, added_at FROM folders WHERE path = ?1",
+                &format!("{SELECT} WHERE path = ?1"),
                 [path.to_string_lossy()],
-                row_to_folder,
+                row_to_project,
             )
             .optional()?)
     }
 
-    /// Unregister a folder. Nothing on disk is touched, and the archives it
-    /// produced keep their records — they simply lose the back-reference.
-    pub fn remove_folder(&self, path: &Path) -> Result<FolderRecord> {
-        let record = self.folder_by_path(path)?.ok_or_else(|| Error::NotFound {
-            kind: "registered folder",
-            name: path.display().to_string(),
-        })?;
+    /// Find a project by path or by name. The name is how an archived project
+    /// is reached, its folder being gone. Two projects sharing a name is an
+    /// error rather than a guess.
+    pub fn find_project(&self, query: &str) -> Result<ProjectRecord> {
+        let as_path = crate::archive::canonical_dir(Path::new(query))
+            .unwrap_or_else(|_| PathBuf::from(query));
+        if let Some(record) = self.project_by_path(&as_path)? {
+            return Ok(record);
+        }
 
-        self.conn
-            .execute("DELETE FROM folders WHERE id = ?1", [record.id])?;
-        Ok(record)
+        let mut statement = self
+            .conn
+            .prepare(&format!("{SELECT} WHERE name = ?1 COLLATE NOCASE"))?;
+        let matches = statement
+            .query_map([query], row_to_project)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        match matches.len() {
+            1 => Ok(matches.into_iter().next().expect("just counted")),
+            0 => Err(Error::NotFound {
+                kind: "project",
+                name: query.to_string(),
+            }),
+            _ => {
+                let paths: Vec<String> = matches
+                    .iter()
+                    .map(|record| format!("\n  {}", record.path.display()))
+                    .collect();
+                Err(Error::Other(anyhow::anyhow!(
+                    "`{query}` matches {} projects; name one by path:{}",
+                    matches.len(),
+                    paths.concat()
+                )))
+            }
+        }
     }
 
-    /// How many archives were created from a registered folder.
-    pub fn archive_count_for_folder(&self, folder_id: i64) -> Result<u64> {
-        Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM archives WHERE folder_id = ?1",
-            [folder_id],
-            |row| row.get::<_, i64>(0),
-        )? as u64)
+    /// Stop tracking a project. Nothing on disk is touched.
+    pub fn remove_project(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM projects WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Record that a project's dependency trees were deleted. `freed`
+    /// accumulates across runs.
+    pub fn mark_trimmed(&self, id: i64, freed: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects
+                SET state = 'trimmed', trimmed_at = ?2, freed_bytes = freed_bytes + ?3
+              WHERE id = ?1",
+            params![id, scan::now_epoch(), freed as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Record that a project was compressed and its folder removed.
+    pub fn mark_archived(&self, id: i64, summary: &Summary) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects
+                SET state = 'archived', archived_at = ?2, archive_path = ?3,
+                    archive_bytes = ?4, source_bytes = ?5, file_count = ?6
+              WHERE id = ?1",
+            params![
+                id,
+                scan::now_epoch(),
+                summary.archive.to_string_lossy(),
+                // SQLite integers are signed; the CHECK constraints keep these
+                // non-negative on the way back out.
+                summary.archive_bytes as i64,
+                summary.source_bytes as i64,
+                summary.file_count as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Record that an archived project was extracted and is live again. The
+    /// row follows the project when `--into` puts it somewhere new.
+    pub fn mark_restored(&self, id: i64, path: &Path) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects
+                SET state = 'active', path = ?2, restored_at = ?3,
+                    archived_at = NULL, archive_path = NULL,
+                    archive_bytes = NULL, source_bytes = NULL, file_count = NULL
+              WHERE id = ?1",
+            params![id, path.to_string_lossy(), scan::now_epoch()],
+        )?;
+        Ok(())
+    }
+
+    /// Record that a trimmed project is being worked on again.
+    pub fn mark_active(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET state = 'active', trimmed_at = NULL WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
     }
 
     /// Connection-level settings applied on every open.
@@ -297,12 +368,32 @@ impl Database {
     }
 }
 
-fn row_to_folder(row: &rusqlite::Row<'_>) -> rusqlite::Result<FolderRecord> {
-    Ok(FolderRecord {
+/// Column list shared by every project query, so the row reader can rely on
+/// the order.
+const SELECT: &str = "SELECT id, path, name, state, added_at, trimmed_at, archived_at,
+                             restored_at, freed_bytes, archive_path, archive_bytes,
+                             source_bytes, file_count
+                        FROM projects";
+
+fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
+    let archive_path: Option<String> = row.get(9)?;
+
+    Ok(ProjectRecord {
         id: row.get(0)?,
         path: PathBuf::from(row.get::<_, String>(1)?),
-        keep: row.get::<_, Option<i64>>(2)?.map(|keep| keep as u32),
-        added_at: row.get(3)?,
+        name: row.get(2)?,
+        state: State::parse(&row.get::<_, String>(3)?),
+        added_at: row.get(4)?,
+        trimmed_at: row.get(5)?,
+        archived_at: row.get(6)?,
+        restored_at: row.get(7)?,
+        freed_bytes: row.get::<_, i64>(8)? as u64,
+        archive: archive_path.map(|path| ArchiveRecord {
+            path: PathBuf::from(path),
+            bytes: row.get::<_, Option<i64>>(10).unwrap_or(None).unwrap_or(0) as u64,
+            source_bytes: row.get::<_, Option<i64>>(11).unwrap_or(None).unwrap_or(0) as u64,
+            file_count: row.get::<_, Option<i64>>(12).unwrap_or(None).unwrap_or(0) as u64,
+        }),
     })
 }
 
@@ -312,26 +403,24 @@ mod tests {
 
     fn summary(archive: &str) -> Summary {
         Summary {
-            source: PathBuf::from("/data/photos"),
+            source: PathBuf::from("/code/dashboard"),
             archive: PathBuf::from(archive),
-            file_count: 3,
-            source_bytes: 1024,
-            archive_bytes: 256,
+            file_count: 120,
+            source_bytes: 4_096,
+            archive_bytes: 512,
         }
     }
 
-    /// Register a folder and record one archive against it.
-    fn folder_with_archive(db: &Database, path: &str, archive: &str) -> i64 {
-        let (id, _) = db.add_folder(Path::new(path), None).unwrap();
-        db.record_archive(&summary(archive), Some(id)).unwrap();
-        id
+    /// Track a project at `path` under `name`.
+    fn track(db: &Database, path: &str, name: &str) -> ProjectRecord {
+        db.add_project(Path::new(path), name).unwrap().0
     }
 
     #[test]
     fn fresh_database_is_fully_migrated() {
         let db = Database::open_in_memory().unwrap();
         assert_eq!(db.schema_version().unwrap(), Database::target_version());
-        assert!(db.folders().unwrap().is_empty());
+        assert!(db.projects().unwrap().is_empty());
     }
 
     #[test]
@@ -340,135 +429,189 @@ mod tests {
         let path = dir.path().join("nested").join("pmanager.db");
 
         let first = Database::open(&path).unwrap();
-        let id = folder_with_archive(&first, "/tools/blender", "/tools/blender/1.0.7z");
+        track(&first, "/code/api", "api");
         drop(first);
 
         let second = Database::open(&path).unwrap();
         assert_eq!(second.schema_version().unwrap(), Database::target_version());
-        assert_eq!(second.folders().unwrap().len(), 1);
-        assert_eq!(second.archive_count_for_folder(id).unwrap(), 1);
+        assert_eq!(second.projects().unwrap().len(), 1);
     }
 
     #[test]
-    fn re_archiving_the_same_path_updates_the_row() {
-        let db = Database::open_in_memory().unwrap();
-        let id = folder_with_archive(&db, "/tools/blender", "/tools/blender/1.0.7z");
+    fn a_database_from_the_version_manager_upgrades_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pmanager.db");
 
-        // A forced re-run writes the same archive path again; that must update
-        // the existing row rather than accumulate duplicates.
-        let mut second = summary("/tools/blender/1.0.7z");
-        second.file_count = 99;
-        db.record_archive(&second, Some(id)).unwrap();
+        // Stop at v2 — the schema as the tool-version sweep left it — and
+        // reopen, which is what an existing installation does after upgrading.
+        let conn = Connection::open(&path).unwrap();
+        for (index, migration) in MIGRATIONS.iter().take(2).enumerate() {
+            conn.execute_batch(migration).unwrap();
+            conn.pragma_update(None, "user_version", (index + 1) as i64)
+                .unwrap();
+        }
+        conn.execute("INSERT INTO folders (path) VALUES ('/tools/blender')", [])
+            .unwrap();
+        drop(conn);
 
-        assert_eq!(db.archive_count_for_folder(id).unwrap(), 1);
+        let db = Database::open(&path).unwrap();
+        assert_eq!(db.schema_version().unwrap(), Database::target_version());
+        assert!(db.projects().unwrap().is_empty());
     }
 
     #[test]
-    fn an_archive_is_read_back_by_its_path() {
+    fn tracking_a_known_project_updates_it_instead_of_duplicating() {
         let db = Database::open_in_memory().unwrap();
-        folder_with_archive(&db, "/tools/blender", "/tools/blender/1.0.7z");
+        let first = track(&db, "/code/api", "api");
 
-        let record = db
-            .archive_at(Path::new("/tools/blender/1.0.7z"))
-            .unwrap()
-            .expect("the archive was just recorded");
-        assert_eq!(record.source_path, PathBuf::from("/data/photos"));
-        assert_eq!(record.file_count, 3);
-        assert_eq!(record.source_bytes, 1024);
-        assert_eq!(record.archive_bytes, 256);
-        assert!(
-            record.created_at.ends_with('Z') && record.created_at.len() == 20,
-            "unexpected timestamp {}",
-            record.created_at
-        );
+        let (second, inserted) = db
+            .add_project(Path::new("/code/api"), "api-server")
+            .unwrap();
+        assert_eq!(first.id, second.id, "the row should be reused");
+        assert!(!inserted);
+        assert_eq!(second.name, "api-server");
+        assert_eq!(db.projects().unwrap().len(), 1);
     }
 
     #[test]
-    fn an_unrecorded_archive_is_none_rather_than_an_error() {
+    fn a_new_project_starts_active_with_nothing_recorded() {
         let db = Database::open_in_memory().unwrap();
+        let record = track(&db, "/code/api", "api");
 
-        // A .7z from another machine still exists on disk; listing it should
-        // not fail just because this database never wrote it.
-        assert!(
-            db.archive_at(Path::new("/tools/blender/9.9.7z"))
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(record.state, State::Active);
+        assert_eq!(record.freed_bytes, 0);
+        assert_eq!(record.archive, None);
+        assert_eq!(record.active_since(), None);
+        assert!(record.added_at > 1_700_000_000, "{}", record.added_at);
     }
 
     #[test]
-    fn archives_are_counted_per_folder() {
+    fn trimming_accumulates_what_it_reclaimed() {
         let db = Database::open_in_memory().unwrap();
-        let blender = folder_with_archive(&db, "/tools/blender", "/tools/blender/1.0.7z");
-        let godot = folder_with_archive(&db, "/tools/godot", "/tools/godot/3.5.7z");
-        db.record_archive(&summary("/tools/blender/2.0.7z"), Some(blender))
+        let record = track(&db, "/code/api", "api");
+
+        db.mark_trimmed(record.id, 400).unwrap();
+        // Worked on again, dependencies reinstalled, abandoned again.
+        db.mark_active(record.id).unwrap();
+        db.mark_trimmed(record.id, 600).unwrap();
+
+        let record = db.project_by_path(Path::new("/code/api")).unwrap().unwrap();
+        assert_eq!(record.state, State::Trimmed);
+        assert_eq!(record.freed_bytes, 1_000);
+        assert!(record.trimmed_at.is_some());
+    }
+
+    #[test]
+    fn archiving_records_what_the_archive_cannot_say_about_itself() {
+        let db = Database::open_in_memory().unwrap();
+        let record = track(&db, "/code/dashboard", "dashboard");
+        db.mark_archived(record.id, &summary("/code/dashboard.7z"))
             .unwrap();
 
-        assert_eq!(db.archive_count_for_folder(blender).unwrap(), 2);
-        assert_eq!(db.archive_count_for_folder(godot).unwrap(), 1);
+        let record = db.find_project("dashboard").unwrap();
+        assert_eq!(record.state, State::Archived);
+        assert!(record.archived_at.is_some());
+
+        let archive = record.archive.expect("an archived project has an archive");
+        assert_eq!(archive.path, PathBuf::from("/code/dashboard.7z"));
+        assert_eq!(archive.bytes, 512);
+        assert_eq!(archive.source_bytes, 4_096);
+        assert_eq!(archive.file_count, 120);
     }
 
     #[test]
-    fn registers_and_lists_folders() {
+    fn restoring_clears_the_archive_and_starts_the_clock() {
         let db = Database::open_in_memory().unwrap();
-        let (id, inserted) = db.add_folder(Path::new("/tools/blender"), Some(3)).unwrap();
-        assert!(inserted);
+        let record = track(&db, "/code/dashboard", "dashboard");
+        db.mark_archived(record.id, &summary("/code/dashboard.7z"))
+            .unwrap();
 
-        let folders = db.folders().unwrap();
-        assert_eq!(folders.len(), 1);
-        assert_eq!(folders[0].id, id);
-        assert_eq!(folders[0].path, PathBuf::from("/tools/blender"));
-        assert_eq!(folders[0].keep, Some(3));
+        db.mark_restored(record.id, Path::new("/elsewhere/dashboard"))
+            .unwrap();
+
+        let record = db.find_project("dashboard").unwrap();
+        assert_eq!(record.state, State::Active);
+        assert_eq!(record.path, PathBuf::from("/elsewhere/dashboard"));
+        assert_eq!(
+            record.archive, None,
+            "the .7z is gone, so the record is too"
+        );
+        assert_eq!(
+            db.projects().unwrap().len(),
+            1,
+            "restoring elsewhere moves the row rather than adding one"
+        );
+
+        // This is what stops the next run archiving it straight back.
+        let since = record.active_since().expect("restored just now");
+        assert!(scan::age(since) < Duration::from_secs(60));
     }
 
     #[test]
-    fn registering_a_known_folder_updates_its_keep() {
+    fn a_project_is_found_by_name_or_by_path() {
         let db = Database::open_in_memory().unwrap();
-        let (first, _) = db.add_folder(Path::new("/tools/godot"), Some(2)).unwrap();
+        track(&db, "/code/dashboard", "dashboard");
 
-        let (second, inserted) = db.add_folder(Path::new("/tools/godot"), Some(5)).unwrap();
-        assert_eq!(first, second, "the row should be reused, not duplicated");
-        assert!(!inserted);
-        assert_eq!(db.folders().unwrap().len(), 1);
-        assert_eq!(db.folders().unwrap()[0].keep, Some(5));
-
-        // Clearing the override is an update too, not a no-op.
-        db.add_folder(Path::new("/tools/godot"), None).unwrap();
-        assert_eq!(db.folders().unwrap()[0].keep, None);
+        assert_eq!(db.find_project("dashboard").unwrap().name, "dashboard");
+        assert_eq!(db.find_project("DashBoard").unwrap().name, "dashboard");
+        assert_eq!(
+            db.find_project("/code/dashboard").unwrap().path,
+            PathBuf::from("/code/dashboard")
+        );
     }
 
     #[test]
-    fn removing_an_unregistered_folder_is_not_found() {
+    fn an_unknown_project_is_not_found() {
         let db = Database::open_in_memory().unwrap();
         assert!(matches!(
-            db.remove_folder(Path::new("/tools/absent")),
+            db.find_project("nothing"),
             Err(Error::NotFound {
-                kind: "registered folder",
+                kind: "project",
                 ..
             })
         ));
     }
 
     #[test]
-    fn unregistering_orphans_its_archives_instead_of_dropping_them() {
+    fn an_ambiguous_name_asks_for_a_path_rather_than_guessing() {
         let db = Database::open_in_memory().unwrap();
-        let id = folder_with_archive(&db, "/tools/blender", "/tools/blender/4.1.7z");
-        assert_eq!(db.archive_count_for_folder(id).unwrap(), 1);
+        track(&db, "/code/one/api", "api");
+        track(&db, "/code/two/api", "api");
 
-        db.remove_folder(Path::new("/tools/blender")).unwrap();
+        let err = db.find_project("api").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("matches 2 projects"), "{message}");
+        assert!(message.contains("/code/one/api"), "{message}");
+        assert!(message.contains("/code/two/api"), "{message}");
+    }
 
-        // ON DELETE SET NULL rather than CASCADE: the .7z is still on disk, so
-        // its record should survive the registration that produced it.
-        assert_eq!(db.archive_count_for_folder(id).unwrap(), 0);
-        let orphans: i64 = db
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM archives WHERE folder_id IS NULL",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(orphans, 1);
+    #[test]
+    fn untracking_leaves_the_others_alone() {
+        let db = Database::open_in_memory().unwrap();
+        let api = track(&db, "/code/api", "api");
+        track(&db, "/code/web", "web");
+
+        db.remove_project(api.id).unwrap();
+
+        let remaining = db.projects().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "web");
+    }
+
+    #[test]
+    fn projects_are_listed_by_name_regardless_of_case() {
+        let db = Database::open_in_memory().unwrap();
+        track(&db, "/code/zeta", "zeta");
+        track(&db, "/code/alpha", "Alpha");
+        track(&db, "/code/mid", "mid");
+
+        let names: Vec<String> = db
+            .projects()
+            .unwrap()
+            .into_iter()
+            .map(|record| record.name)
+            .collect();
+        assert_eq!(names, ["Alpha", "mid", "zeta"]);
     }
 
     #[test]

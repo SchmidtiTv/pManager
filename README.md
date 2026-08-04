@@ -1,22 +1,21 @@
 # pManager
 
-Keeps the disk from filling up with old versions of your tools.
+Keeps the disk from filling up with projects you have stopped working on.
 
-Point pManager at a folder that holds one subfolder per version, and once a day
-it compresses everything except the newest few into `.7z` archives and deletes
-the folders it compressed. The old versions stay recoverable; the space they
-were using does not.
+Point pManager at your projects and once a day it deletes the `node_modules` of
+the ones nobody has touched in two months, and compresses the ones nobody has
+touched in six. Nothing is lost — the trimmed ones need an `npm install`, the
+compressed ones a `pmanager restore`.
 
 ```
-C:\Tools\Blender\          before            C:\Tools\Blender\        after
-  4.1\   1.9 GiB                               4.1.7z   412 MiB
-  4.2\   2.0 GiB                               4.2.7z   430 MiB
-  4.3\   2.1 GiB                               4.3\     2.1 GiB
-  4.10\  2.2 GiB                               4.10\    2.2 GiB
+C:\Code\                before                C:\Code\               after
+  api-server\    1.2 GiB  (edited today)        api-server\   1.2 GiB
+  old-dashboard\ 890 MiB  (3 months ago)        old-dashboard\  12 MiB
+  scratch-cli\   410 MiB  (14 months ago)       scratch-cli.7z 2.1 MiB
 ```
 
-Written in Rust, with a local SQLite database recording every folder it watches
-and every archive it has made.
+Written in Rust, with a local SQLite database recording every project it
+watches and what it has done to each one.
 
 ## Building
 
@@ -28,17 +27,17 @@ cargo install --path .       # install into ~/.cargo/bin
 
 Requires Rust 1.93 or newer (edition 2024). SQLite is compiled in from source,
 so there is nothing to install first — and no `7z` binary is needed either;
-compression is pure Rust.
+compression is pure Rust. `git` is used when it is on PATH and simply skipped
+when it is not.
 
 ## Getting started
 
 ```sh
-pmanager folder add C:\Tools\Blender     # watch this tool's versions
-pmanager folder add C:\Tools\Godot --keep 3
-pmanager list                            # see what you have
-pmanager run --dry-run                   # see what would be archived
-pmanager run                             # do it
-pmanager schedule install                # …and every day at 03:00
+pmanager project add C:\Code\api-server   # track a project
+pmanager list                             # see them all
+pmanager run                              # see what has aged out (changes nothing)
+pmanager run --yes                        # carry it out
+pmanager schedule install                 # …every day at 03:00
 ```
 
 ## Usage
@@ -51,13 +50,19 @@ pmanager [OPTIONS] <COMMAND>
 
 | Command | Description |
 | --- | --- |
-| `run` | Sweep every registered folder: archive all but the newest versions |
-| `list` | Show every version of every registered folder |
-| `folder add <FOLDER>` | Register a folder whose versions should be managed |
-| `folder remove <FOLDER>` | Unregister a folder; nothing on disk is touched |
+| `run` | Act on projects that have aged out; reports only unless given `--yes` |
+| `list` | Show every tracked project, one line each |
+| `info <PROJECT>` | Show everything known about one project |
+| `project add <PROJECT>` | Track a project folder |
+| `project remove <PROJECT>` | Stop tracking one; nothing on disk is touched |
+| `project prune` | Stop tracking projects whose folder is gone |
+| `restore <PROJECT>` | Extract an archived project and put it back to work |
 | `schedule install` | Register the daily run with Windows Task Scheduler |
 | `schedule uninstall` | Remove the scheduled task |
 | `schedule status` | Show the scheduled task |
+
+A `<PROJECT>` is a path or the name shown by `pmanager list` — the name is how
+you reach an archived project, whose folder is not there to point at.
 
 ### Global options
 
@@ -92,102 +97,51 @@ These are accepted before or after the subcommand.
 | `6` | Archive error |
 | `130` | Interrupted |
 
-## Managing versions
-
-A **registered folder** is the parent of one tool's versions, not a version
-itself. Register `C:\Tools\Blender`, the folder that contains `4.1`, `4.2` and
-`4.3` — not `C:\Tools\Blender\4.3`.
-
-```sh
-pmanager folder add C:\Tools\Blender          # keep_versions applies (2)
-pmanager folder add C:\Tools\Godot --keep 3   # …unless overridden per folder
-pmanager folder remove C:\Tools\Godot
-```
-
-### What you have
-
-`pmanager list` shows every version of every registered folder, oldest first,
-whether it is still unpacked or has already been swept into a `.7z`:
+## How a project ages
 
 ```
-$ pmanager list
-C:\Tools\Blender  keep 2, 2 unpacked, 2 archived
-  4.1   archived  412.4 MiB  from 1.9 GiB in 842 file(s)
-  4.2   archived  430.1 MiB  from 2.0 GiB in 851 file(s)
-  4.3   unpacked
-  4.10  unpacked
-C:\Tools\Godot  keep 3, 3 unpacked, 0 archived
-  3.5   unpacked
-  4.0   unpacked
-  4.1   unpacked
+active  ──60 days idle──▶  trimmed  ──180 days idle──▶  archived
+   ▲                          │                            │
+   └──────(edited again)──────┘         pmanager restore ──┘
 ```
 
-The size on the left is the archive as it sits on disk; `from …` is what it
-held before compression, which is what restoring it would cost you. That part
-comes from the database — an archive with no record still appears, just marked
-`(not in the database)`, because the file is what matters.
+**active** — normal, nothing is done to it.
 
-```sh
-pmanager list --archived              # only the compressed versions
-pmanager list --unpacked              # only the ones still taking up room
-pmanager list --folder C:\Tools\Godot # one folder; repeatable
-```
+**trimmed** — the dependency trees are deleted. The project itself is
+completely untouched: sources, config, `.git`, everything. `npm install` undoes
+it. This is where most of the disk is won, and it costs nothing but a reinstall
+you would have done anyway after six months away.
 
-The `unpacked`/`archived` counts in the header describe the folder itself, so
-they stay put when a filter narrows the lines below them.
+**archived** — the whole project is a `.7z` and the folder is gone. `pmanager
+restore` extracts it, reinstalls its dependencies and marks it active again.
 
-### The sweep
+### What "idle" means
 
-`pmanager run` visits each registered folder, keeps the newest few versions
-unpacked and compresses the rest:
+The age of a project is the most recent modification time of any file in it,
+**ignoring directories that churn on their own**: `node_modules`, `.git`,
+`dist`, `build`, `target`, `.venv`, `coverage` and the rest of `skip_dirs`.
 
-```
-$ pmanager run
-C:\Tools\Blender  4 version(s), keeping 2
-  archived 4.1 -> 4.1.7z  842 files, 1.9 GiB -> 412.4 MiB, freed 1.5 GiB
-  archived 4.2 -> 4.2.7z  851 files, 2.0 GiB -> 430.1 MiB, freed 1.6 GiB
-C:\Tools\Godot  3 version(s), keeping 3
-  nothing to archive
+That exclusion is the whole trick. An `npm install` rewrites thousands of files
+without anyone opening the project, and counting those would keep a dead
+project looking alive forever — which is exactly the failure mode of judging
+staleness by folder timestamps.
 
-2 archived, 0 skipped, 0 failed, 3.1 GiB freed
-```
+Git activity is read separately, and shown by `list` and `info`, but it does
+not change a project's age: committing is not the same as editing, and a
+project can be worked on for a week without a single commit.
 
-Each archive is written *next to* the folder it replaces, so `4.1\` becomes
-`4.1.7z` in the same place. Restoring is a normal 7-Zip extract — the folder
-name is stored inside the archive, so it comes back as `4.1\`.
+### What is never thrown away
 
-Useful flags:
+The archive holds **everything except the purge directories** — including
+`.git`. History, stashes, local branches and remotes all survive the round
+trip, because none of that is regenerable. Only `node_modules` and whatever
+else you add to `purge_dirs` is left out, on the grounds that one command
+rebuilds it.
 
-```sh
-pmanager run --dry-run              # report only; nothing is written or deleted
-pmanager run --keep 3               # override the keep count for this run
-pmanager run --folder C:\Tools\Godot  # only this folder; repeatable
-pmanager run --keep-source          # write the archives but keep the folders
-pmanager run --force                # replace an archive that already exists
-pmanager run --level 9 --threads 8  # compression settings for this run
-```
+The rule is a single one, and it runs in both directions: **what pManager is
+willing to delete is exactly what it refuses to store.**
 
-`--folder` also accepts a folder that was never registered, which is a good way
-to try the sweep on something before committing to it.
-
-### Which version is "oldest"
-
-Ordering is by the numbers in the folder name. Every run of digits is one
-component, compared numerically, so `4.9` is older than `4.10` — the answer a
-string sort gets wrong. `v4.2`, `4_2`, `Blender-4.2` and `2026-08-04` all
-parse.
-
-A folder whose name contains no digits at all is *not* a version: `current\`
-and `.cache\` are neither counted nor archived. The exception is a registered
-folder where nothing is numbered — there pManager falls back to modification
-time and treats every subfolder as a version, so tools versioned by
-date-of-copy still work.
-
-Symlinks and junctions are skipped, files are ignored, and the `.7z` files from
-previous runs are not mistaken for versions — so a daily sweep settles instead
-of eating one version per day.
-
-### What protects the old versions
+### What protects the archived projects
 
 The delete is what frees the disk, so it happens last and only after the
 archive has been proven good:
@@ -195,23 +149,185 @@ archive has been proven good:
 1. the archive is written to a fresh `.7z`, and deleted again if compression
    fails — a `.7z` on disk is never half-written;
 2. it is read back and its file count compared against what was walked;
-3. only then is the version folder removed.
+3. only then is the project folder removed.
 
-A failure at any earlier point leaves the version folder exactly where it was.
-If an archive of that name already exists, that version is skipped with a
-message rather than overwritten, and nothing is deleted — pass `--force` when
-you do want it replaced. Use `--keep-source` for a first run if you would
-rather inspect the archives before trusting the deletion.
+A failure at any earlier point leaves the project exactly where it was. If an
+archive of that name already exists, the project is skipped rather than
+overwritten; pass `--force` when you do want it replaced. Use `--keep-source`
+for a first run if you would rather inspect the archives before trusting the
+deletion.
 
-One folder failing does not stop the others: an unplugged drive is reported,
-the remaining folders are still swept, and the run ends with a non-zero exit
+One project failing does not stop the others: an unplugged drive is reported,
+the remaining projects are still swept, and the run ends with a non-zero exit
 code so a failed scheduled run is visible in Task Scheduler's history.
+
+### Unfinished work is held back
+
+A project with uncommitted changes or unpushed commits is never archived,
+however old it is:
+
+```
+$ pmanager run
+half-done            1y ago  old enough to archive, held back: 1 uncommitted change(s)
+```
+
+Nothing would actually be *lost* by archiving it — the working tree and `.git`
+both go into the `.7z` — but a folder disappearing out from under work you left
+half-finished is a surprise, and that is what uncommitted changes mean.
+`--force` overrides it. Trimming is not affected: deleting `node_modules` never
+touches your work.
+
+### Restoring does not restart the clock at zero
+
+Extracting an archive preserves modification times, so a project restored from
+a two-year-old archive arrives with two-year-old files. pManager records when
+it restored a project and ages it from there, so the next run does not
+immediately archive it straight back.
+
+## Tracking projects
+
+A tracked project is **one project folder** — the one holding `package.json`,
+`.git` and the source — not the directory they all live in.
+
+```sh
+pmanager project add C:\Code\api-server
+pmanager project add C:\Code\web C:\Code\api        # several at once
+pmanager project add C:\Code\thing --name "Thing"   # override the display name
+pmanager project remove api-server
+```
+
+The name comes from `package.json`'s `name` when there is one, otherwise the
+folder name. Adding a project reports what the next run would do to it, so the
+first `run` is never a surprise:
+
+```
+$ pmanager project add C:\Code\old-dashboard
+tracking old-dashboard  C:\Code\old-dashboard
+  last edited 3mo ago, the next run would free 890.2 MiB
+```
+
+A project whose folder has been moved or deleted stays tracked until you say
+otherwise, since a drive that is not plugged in looks exactly the same:
+
+```sh
+pmanager project prune          # report which are missing
+pmanager project prune --yes    # stop tracking them
+```
+
+## What you have
+
+```
+$ pmanager list
+NAME           EDITED     COMMITTED    STATE     NOTES
+api-server     2h ago     2h ago       active    1.2 GiB to reclaim
+half-done      1y ago     1y ago       active    410.0 MiB to reclaim, stale >60d, 1 uncommitted
+old-dashboard  3mo ago    3mo ago      trimmed   stale >60d
+scratch-cli    8mo ago    —            archived  2.1 MiB
+
+4 project(s): 2 active, 1 trimmed, 1 archived
+1.6 GiB sitting in dependency trees
+890.2 MiB reclaimed so far
+```
+
+`EDITED` is the idle clock described above; `COMMITTED` is the last commit.
+Both are read off the disk on every run, so they are true rather than
+remembered — which is why `list` takes a moment on a large collection.
+
+```sh
+pmanager list --state trimmed   # active, trimmed or archived
+pmanager list --stale           # past the trim threshold
+pmanager list --dirty           # uncommitted changes
+pmanager list --unpushed        # commits the remote has not seen
+```
+
+`pmanager info <PROJECT>` is the same information for one project, in full —
+which file was edited last, where each dependency tree is, the branch, the
+commit, the changed files — ending with what the next run would do and, when
+the answer is nothing, why not:
+
+```
+$ pmanager info half-done
+half-done  C:\Code\half-done
+  state           active
+  tracked         3mo ago
+  last edit       1y ago  src/index.js
+  dependencies    410.0 MiB in 1 tree(s)
+                    410.0 MiB  node_modules
+  branch          main  → origin/main
+  last commit     1y ago  ff1b8aa  Rough draft  (Schmidti)
+  untracked       1 file(s)
+                    src/wip.js
+
+  next run        nothing — past 180 days, but held back by 1 uncommitted change(s) (--force overrides)
+```
+
+## The run
+
+`pmanager run` surveys every tracked project and **reports what it would do**.
+It changes nothing without `--yes`:
+
+```
+$ pmanager run
+old-dashboard        3mo ago  would trim 1 dependency tree(s), freeing 890.2 MiB
+scratch-cli           1y ago  would archive to C:\Code\scratch-cli.7z
+
+2 project(s) would change
+nothing was changed; pass --yes to apply
+```
+
+```
+$ pmanager run --yes
+old-dashboard        3mo ago  trimmed 1 dependency tree(s), freed 890.2 MiB
+scratch-cli           1y ago  archived to C:\Code\scratch-cli.7z  1204 file(s), 410.0 MiB -> 2.1 MiB, freed 407.9 MiB
+
+1 trimmed, 1 archived, 1.3 GiB freed
+```
+
+Useful flags:
+
+```sh
+pmanager run --yes --project api-server   # one project; repeatable
+pmanager run --yes --trim-days 30         # override the thresholds for this run
+pmanager run --yes --no-archive           # trim only, never archive
+pmanager run --yes --no-trim              # archive only, never trim
+pmanager run --yes --keep-source          # write the archives, keep the folders
+pmanager run --yes --force                # archive despite unfinished work
+pmanager run --yes --archive-dir D:\Cold  # collect the archives in one place
+pmanager run --all                        # show projects nothing happens to
+pmanager run --yes --level 9 --threads 8  # compression settings for this run
+```
+
+A workspace with a `node_modules` per package has all of them trimmed, not just
+the one at the top. If one cannot be deleted — a file still open in an editor —
+the others still go and the survivor is picked up on the next run.
+
+## Restoring
+
+```sh
+pmanager restore scratch-cli                 # extract, npm install, mark active
+pmanager restore scratch-cli --into D:\Code  # somewhere else
+pmanager restore scratch-cli --no-install    # skip the dependency install
+pmanager restore scratch-cli --delete-archive
+```
+
+The archive is extracted into a staging directory beside the destination and
+moved into place as one rename once it is whole, so a failed extraction can
+never half-overwrite anything. An existing folder in the way is refused rather
+than merged into.
+
+**The archive is kept by default.** Deleting the only copy of a project the
+moment it is unpacked, before anyone has looked at the result, would be the one
+irreversible step in a design that has none.
+
+A `.7z` written by pManager is an ordinary 7-Zip archive, so a project can also
+be recovered by hand with 7-Zip, or on any machine that has never heard of
+pManager. The folder name is stored inside it.
 
 ## Scheduling the daily run
 
-pManager has no resident daemon. `schedule install` hands `pmanager run` to
-Windows Task Scheduler, which already knows how to run something daily, survive
-reboots and record the outcome.
+pManager has no resident daemon. `schedule install` hands `pmanager run --yes`
+to Windows Task Scheduler, which already knows how to run something daily,
+survive reboots and record the outcome.
 
 ```sh
 pmanager schedule install                 # daily at 03:00
@@ -221,20 +337,24 @@ pmanager schedule status
 pmanager schedule uninstall
 ```
 
+Installing the schedule is the deliberate act that grants the daily run
+permission to delete — that is why the task carries `--yes` while typing
+`pmanager run` yourself does not.
+
 The task is named `pManager daily sweep` (`--name` changes it) and runs the
 executable at its current path, so move the binary and you will want to install
 it again. An explicit `--config` is carried into the task.
 
 On non-Windows platforms these commands report that Task Scheduler is not
-available; run `pmanager run` from cron or a systemd timer instead.
+available; run `pmanager run --yes` from cron or a systemd timer instead.
 
 ## Database
 
 A single SQLite file, by default `pmanager.db` inside the platform data
 directory (set `data_dir` or `database` to move it). It is created and migrated
-automatically on first use — there is nothing to initialize. SQLite is linked
-statically via `rusqlite`'s bundled build, so there is no system package to
-install and no version skew between machines.
+automatically on first use. SQLite is linked statically via `rusqlite`'s
+bundled build, so there is no system package to install and no version skew
+between machines.
 
 The schema is versioned with SQLite's own `user_version` pragma and migrated on
 open: each entry in `MIGRATIONS` (`src/db.rs`) runs inside a transaction, so an
@@ -246,16 +366,15 @@ has shipped.
 Connections open with WAL journaling, `foreign_keys = ON` and a 5 second busy
 timeout, so a second `pmanager` waits its turn instead of failing.
 
-Two tables: `folders` is the registry `pmanager run` walks, and `archives`
-records every `.7z` written, pointing back at the folder it came from. The
-archive records are what let `pmanager list` report a version's original size
-— the one thing a `.7z` cannot tell you by looking at it.
-Unregistering a folder clears that back-reference (`ON DELETE SET NULL`) rather
-than discarding the archive records — the files are still on disk, so their
-history should not vanish with the registration.
+One table, `projects`: where each project is in its life, when it got there,
+how much trimming has reclaimed, and — for an archived one — where the `.7z`
+went and what it held. That last part is the only thing stored that cannot be
+re-derived by looking at the disk, and it is what lets `list` say what
+restoring a project would cost.
 
-The database is a record, not the source of truth: the archives and version
-folders on disk are. Deleting the database loses the history, not the versions.
+The database is a record, not the source of truth: the projects and archives on
+disk are. Deleting it loses the registrations and the history, not a single
+project.
 
 ## Configuration
 
@@ -269,8 +388,11 @@ Configuration is optional — every key has a default. To change one, write a
 | Windows | `%APPDATA%\pmanager\config.toml` |
 
 ```toml
-keep_versions = 3
-compression_level = 9
+trim_days = 30
+archive_days = 120
+purge_dirs = ["node_modules", "target", ".venv"]
+archive_dir = 'D:\Cold storage'
+install_command = ["pnpm", "install"]
 ```
 
 Values are layered, lowest precedence first: built-in defaults, then the
@@ -282,14 +404,34 @@ is an error. Unknown keys are rejected so typos surface immediately.
 | --- | --- | --- |
 | `data_dir` | platform data directory | Where pManager keeps its data |
 | `database` | `pmanager.db` in `data_dir` | SQLite database file |
-| `keep_versions` | `2` | Versions left unpacked per folder |
+| `trim_days` | `60` | Days idle before the dependency trees go |
+| `archive_days` | `180` | Days idle before the project is compressed |
+| `purge_dirs` | `["node_modules"]` | Deleted when trimming; kept out of archives |
+| `skip_dirs` | see `src/scan.rs` | Not counted when dating a project |
+| `archive_dir` | beside each project | Where archives are written |
+| `install_command` | `npm install` when there is a `package.json` | Run by `restore` |
 | `compression_level` | `6` | LZMA2 level used by `run`, 0–9 |
 | `compression_threads` | `1` | Compression threads used by `run` |
 
-The keep count is resolved per folder, highest precedence first: `run --keep`,
-then the folder's own `--keep` from `folder add`, then `keep_versions`. A
-`keep_versions` of `0` is rejected rather than obeyed — it would archive every
-copy of a tool, which is never what the key is meant to say.
+`archive_days` below `trim_days` is rejected rather than obeyed: as written it
+would archive and delete every stale project without ever trimming one.
+
+Anything in `purge_dirs` is added to `skip_dirs` automatically — a directory
+pManager is willing to delete cannot also be evidence that a project is alive.
+That way adding `target` to `purge_dirs` does not silently keep every Rust
+project looking freshly edited.
+
+`install_command = []` turns the reinstall step off entirely.
+
+### Beyond Node
+
+The defaults are Node-shaped because that is what most of this is for, but
+nothing in the design is:
+
+```toml
+purge_dirs = ["node_modules", "target", ".venv", "__pycache__", "vendor"]
+install_command = []          # too many ecosystems to guess; do it yourself
+```
 
 ## Layout
 
@@ -298,9 +440,10 @@ src/
   main.rs             process entry point: parse, run, map errors to exit codes
   lib.rs              library crate; dispatches a parsed command
   cli.rs              clap definitions: global flags and the subcommand list
-  version.rs          finding version folders and ordering them oldest first
-  sweep.rs            the keep-newest-N policy: plan, archive, verify, delete
-  archive.rs          7z creation: walking, filtering, compression
+  scan.rs             measuring a project: last edit, purgeable size, ages
+  git.rs              read-only git status via the `git` binary
+  lifecycle.rs        the policy: states, thresholds, decide, trim, archive
+  archive.rs          7z creation, verification and extraction
   db.rs               SQLite connection, migrations and queries
   config.rs           config file discovery, parsing and defaults
   error.rs            error type and its exit-code mapping
@@ -309,14 +452,16 @@ src/
     mod.rs            shared Context handed to every subcommand
     run.rs            `pmanager run`
     list.rs           `pmanager list`
-    folder.rs         `pmanager folder`
+    info.rs           `pmanager info`
+    project.rs        `pmanager project`
+    restore.rs        `pmanager restore`
     schedule.rs       `pmanager schedule`
 tests/
   cli.rs              end-to-end tests that run the built binary
 ```
 
-`version.rs` and `sweep.rs` hold the policy and are filesystem-only: no
-database, no printing, no clap. That is what lets the ordering rules and the
+`scan.rs`, `git.rs` and `lifecycle.rs` hold the policy and are filesystem-only:
+no database, no printing, no clap. That is what lets the ageing rules and the
 archive-then-delete sequence be tested directly, and it keeps `commands/run.rs`
 down to gathering settings, looping and reporting.
 
@@ -349,6 +494,8 @@ binary on Windows; it also checks dependency licences and advisories. It does
 `--all-targets` the tests are still compiled and type-checked on every push, so
 they cannot silently rot; they just are not executed.
 
+The git tests skip themselves when `git` is not on PATH rather than failing.
+
 ## Licensing of dependencies
 
 Every dependency can be used commercially, including in closed-source products.
@@ -380,3 +527,28 @@ pManager itself has no license declared yet — that is a call for the repositor
 owner. Until one is chosen the crate is marked `publish = false` and cargo-deny
 skips it (`private.ignore`); setting `license` in `Cargo.toml` afterwards lets
 that setting go away.
+
+## Relationship to pTag
+
+pManager is a port of [pTag](pTag/), a Python tool that did the same job. The
+core idea is unchanged — age projects out by last edit, delete the dependency
+trees, then compress what is left — and pTag's `check` is this tool's `run`.
+
+What changed in the move:
+
+- **`.git` is archived rather than skipped.** pTag left it out of the zip, which
+  meant a deep-archived project lost its history unless everything had been
+  pushed. It compensated by refusing to zip anything unpushed; pManager keeps
+  that as a "don't surprise me" rule but no longer needs it to protect history.
+- **Restoring records itself.** pTag would re-archive a project it had just
+  restored, because unzipping preserves the old file times. pManager ages a
+  project from its restore.
+- **The staircase is gone.** pTag required a project to pass through *archived*
+  before it could be *deep-archived*, which took two runs a threshold apart. A
+  project old enough to compress is compressed.
+- **`--yes` instead of prompts.** pTag asked before each deletion, which is
+  awkward for a scheduled task. pManager reports by default and acts on `--yes`.
+- **SQLite instead of `db.json`**, one process-wide `run` instead of per-command
+  rescans, and a compiled binary instead of a Python interpreter.
+
+pTag's Flask web UI (`pTag/server.py`) has no equivalent here.

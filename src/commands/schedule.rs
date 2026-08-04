@@ -2,7 +2,8 @@
 //! Scheduler.
 //!
 //! pManager stays a one-shot command: there is no resident daemon to keep
-//! alive or to restart after a reboot. `schedule install` hands `pmanager run`
+//! alive or to restart after a reboot. `schedule install` hands `pmanager run
+//! --yes`
 //! to `schtasks.exe`, which is the component Windows already has for exactly
 //! this, and which survives reboots and reports a failed run in its own
 //! history.
@@ -31,7 +32,7 @@ pub struct Args {
 
 #[derive(Debug, clap::Subcommand)]
 enum ScheduleCommand {
-    /// Register a daily `pmanager run` with Task Scheduler
+    /// Register a daily `pmanager run --yes` with Task Scheduler
     Install {
         /// Time of day to run, as HH:MM
         #[arg(long, value_name = "HH:MM", default_value = DEFAULT_TIME, value_parser = parse_time)]
@@ -133,10 +134,15 @@ fn status(ctx: &Context, name: &str) -> Result<()> {
 
 /// The command line Task Scheduler should run.
 ///
+/// `--yes` is the point of the whole subcommand: a bare `pmanager run` only
+/// reports, which would make for a very diligent scheduled task that never did
+/// anything. Installing the schedule is the deliberate act that grants the
+/// daily run permission to delete.
+///
 /// The executable is quoted because `C:\Program Files\…` is a perfectly normal
 /// place for it to live, and `schtasks` splits `/TR` on spaces otherwise.
 fn task_command(exe: &Path, config: Option<&Path>) -> String {
-    let mut command = format!("\"{}\" run", exe.display());
+    let mut command = format!("\"{}\" run --yes", exe.display());
     if let Some(config) = config {
         command.push_str(&format!(" --config \"{}\"", config.display()));
     }
@@ -208,7 +214,7 @@ fn schtasks(arguments: &[String]) -> Result<String> {
 fn schtasks(_arguments: &[String]) -> Result<String> {
     Err(Error::Other(anyhow::anyhow!(
         "`pmanager schedule` needs Windows Task Scheduler; on this platform run \
-         `pmanager run` from cron or a systemd timer instead"
+         `pmanager run --yes` from cron or a systemd timer instead"
     )))
 }
 
@@ -219,7 +225,10 @@ mod tests {
     #[test]
     fn the_scheduled_command_quotes_the_executable() {
         let command = task_command(Path::new(r"C:\Program Files\pmanager\pmanager.exe"), None);
-        assert_eq!(command, r#""C:\Program Files\pmanager\pmanager.exe" run"#);
+        assert_eq!(
+            command,
+            r#""C:\Program Files\pmanager\pmanager.exe" run --yes"#
+        );
     }
 
     #[test]
@@ -230,7 +239,7 @@ mod tests {
         );
         assert_eq!(
             command,
-            r#""C:\tools\pmanager.exe" run --config "D:\config\pmanager.toml""#
+            r#""C:\tools\pmanager.exe" run --yes --config "D:\config\pmanager.toml""#
         );
     }
 

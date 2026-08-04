@@ -11,9 +11,10 @@ pub mod commands;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod git;
+pub mod lifecycle;
 pub mod logging;
-pub mod sweep;
-pub mod version;
+pub mod scan;
 
 pub use cli::Cli;
 pub use error::{Error, Result};
@@ -29,7 +30,9 @@ pub fn run(cli: Cli) -> Result<()> {
     match &command {
         Command::Run(args) => commands::run::run(args, &ctx),
         Command::List(args) => commands::list::run(args, &ctx),
-        Command::Folder(args) => commands::folder::run(args, &ctx),
+        Command::Info(args) => commands::info::run(args, &ctx),
+        Command::Project(args) => commands::project::run(args, &ctx),
+        Command::Restore(args) => commands::restore::run(args, &ctx),
         Command::Schedule(args) => commands::schedule::run(args, &ctx),
     }
 }
