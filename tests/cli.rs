@@ -186,3 +186,245 @@ fn logs_go_to_stderr_not_stdout() {
         .stdout(predicate::str::contains("DEBUG").not())
         .stderr(predicate::str::contains("no config file"));
 }
+
+// --- archives and database -------------------------------------------------
+
+/// A config file pointing every data path at a throwaway directory, so these
+/// tests never touch the real database.
+fn isolated() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        format!("data_dir = \"{}\"\n", dir.path().join("data").display()),
+    )
+    .unwrap();
+    (dir, config)
+}
+
+/// Build a folder with two files to archive.
+fn source_folder(root: &std::path::Path) -> std::path::PathBuf {
+    let source = root.join("photos");
+    std::fs::create_dir_all(source.join("sub")).unwrap();
+    std::fs::write(source.join("a.txt"), "hello").unwrap();
+    std::fs::write(source.join("sub").join("b.txt"), "world!").unwrap();
+    source
+}
+
+#[test]
+fn creates_an_archive_and_records_it() {
+    let (dir, config) = isolated();
+    let source = source_folder(dir.path());
+    let out = dir.path().join("photos.7z");
+
+    vmanager()
+        .args(["archive", "create"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&out)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 files"));
+
+    assert!(out.is_file());
+
+    // The run should now be visible in the database.
+    vmanager()
+        .args(["archive", "list", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("photos.7z"));
+
+    vmanager()
+        .args(["db", "status", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("archives  1"));
+}
+
+#[test]
+fn archive_output_defaults_to_the_folder_name() {
+    let (dir, config) = isolated();
+    let source = source_folder(dir.path());
+    let workdir = dir.path().join("cwd");
+    std::fs::create_dir(&workdir).unwrap();
+
+    vmanager()
+        .current_dir(&workdir)
+        .args(["archive", "create"])
+        .arg(&source)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    assert!(workdir.join("photos.7z").is_file());
+}
+
+#[test]
+fn refusing_to_overwrite_uses_the_archive_exit_code() {
+    let (dir, config) = isolated();
+    let source = source_folder(dir.path());
+    let out = dir.path().join("photos.7z");
+
+    let create = || {
+        let mut cmd = vmanager();
+        cmd.args(["archive", "create"])
+            .arg(&source)
+            .arg("--output")
+            .arg(&out)
+            .arg("--config")
+            .arg(&config);
+        cmd
+    };
+
+    create().assert().success();
+    create()
+        .assert()
+        .code(6)
+        .stderr(predicate::str::contains("--force"));
+    create().arg("--force").assert().success();
+}
+
+#[test]
+fn no_record_skips_the_database() {
+    let (dir, config) = isolated();
+    let source = source_folder(dir.path());
+
+    vmanager()
+        .args(["archive", "create"])
+        .arg(&source)
+        .arg("--output")
+        .arg(dir.path().join("photos.7z"))
+        .args(["--no-record", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+
+    vmanager()
+        .args(["archive", "list", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no archives recorded yet"));
+}
+
+#[test]
+fn archiving_a_missing_folder_is_not_found() {
+    let (dir, config) = isolated();
+
+    vmanager()
+        .args(["archive", "create"])
+        .arg(dir.path().join("absent"))
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn forget_removes_the_record_but_keeps_the_file() {
+    let (dir, config) = isolated();
+    let source = source_folder(dir.path());
+    let out = dir.path().join("photos.7z");
+
+    vmanager()
+        .args(["archive", "create"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&out)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    vmanager()
+        .args(["archive", "forget", "1", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+
+    assert!(out.is_file(), "forget must not delete the archive itself");
+
+    vmanager()
+        .args(["archive", "forget", "1", "--config"])
+        .arg(&config)
+        .assert()
+        .code(4);
+}
+
+#[test]
+fn prune_drops_records_for_deleted_archives() {
+    let (dir, config) = isolated();
+    let source = source_folder(dir.path());
+    let out = dir.path().join("photos.7z");
+
+    vmanager()
+        .args(["archive", "create"])
+        .arg(&source)
+        .arg("--output")
+        .arg(&out)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    std::fs::remove_file(&out).unwrap();
+
+    vmanager()
+        .args(["archive", "prune", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 record(s) pruned"));
+
+    vmanager()
+        .args(["db", "status", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("archives  0"));
+}
+
+#[test]
+fn db_path_does_not_create_the_database() {
+    let (dir, config) = isolated();
+    let db_path = dir.path().join("data").join("vmanager.db");
+
+    vmanager()
+        .args(["db", "path", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vmanager.db"));
+
+    assert!(!db_path.exists(), "`db path` should be read-only");
+
+    vmanager()
+        .args(["db", "init", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("schema v1"));
+
+    assert!(db_path.is_file());
+}
+
+#[test]
+fn compression_level_is_validated() {
+    let (dir, config) = isolated();
+    let source = source_folder(dir.path());
+
+    vmanager()
+        .args(["archive", "create"])
+        .arg(&source)
+        .args(["--level", "11", "--config"])
+        .arg(&config)
+        .assert()
+        .code(2);
+}

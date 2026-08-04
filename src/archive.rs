@@ -1,0 +1,488 @@
+//! Creating `.7z` archives from a folder.
+//!
+//! Compression is pure Rust ([`sevenz_rust2`]) — no `7z` binary needs to be
+//! installed. Archives use LZMA2 in solid mode, which is what 7-Zip itself
+//! produces by default.
+//!
+//! Entry names are relative to the *parent* of the source folder, so
+//! `vmanager archive create photos` yields an archive containing
+//! `photos/…` — the same layout as `7z a photos.7z photos`.
+
+use std::path::{Component, Path, PathBuf};
+
+use sevenz_rust2::{ArchiveWriter, encoder_options::Lzma2Options};
+
+use crate::error::{Error, Result};
+
+/// Extension used for every archive this module writes.
+pub const EXTENSION: &str = "7z";
+
+/// Compression level accepted by LZMA2.
+pub const MIN_LEVEL: u32 = 0;
+pub const MAX_LEVEL: u32 = 9;
+/// 7-Zip's own default (`-mx=6`).
+pub const DEFAULT_LEVEL: u32 = 6;
+
+/// Uncompressed bytes each worker thread takes at a time.
+///
+/// Only used when `threads > 1`; larger chunks compress better, smaller ones
+/// parallelize better. Clamped up to the dictionary size by the encoder.
+const MT_CHUNK_SIZE: u64 = 64 * 1024 * 1024;
+
+/// How an archive should be built.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// LZMA2 compression level, 0 (fastest) to 9 (smallest).
+    pub level: u32,
+    /// Worker threads. More threads trade compression ratio for speed.
+    pub threads: u32,
+    /// File and directory names to skip, matched against each path component.
+    pub exclude: Vec<String>,
+    /// Overwrite the destination if it already exists.
+    pub overwrite: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            level: DEFAULT_LEVEL,
+            threads: 1,
+            exclude: Vec::new(),
+            overwrite: false,
+        }
+    }
+}
+
+/// What a completed archive run produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    /// The folder that was archived.
+    pub source: PathBuf,
+    /// The archive that was written.
+    pub archive: PathBuf,
+    /// Number of files stored.
+    pub file_count: u64,
+    /// Total size of those files before compression.
+    pub source_bytes: u64,
+    /// Size of the archive on disk.
+    pub archive_bytes: u64,
+}
+
+impl Summary {
+    /// Compressed size as a percentage of the original, or `None` when the
+    /// source was empty and the ratio would divide by zero.
+    pub fn ratio(&self) -> Option<f64> {
+        (self.source_bytes > 0)
+            .then(|| self.archive_bytes as f64 / self.source_bytes as f64 * 100.0)
+    }
+}
+
+/// Archive `source` into `dest`.
+///
+/// `source` must be a directory. The destination's parent directories are
+/// created as needed.
+pub fn create(source: &Path, dest: &Path, options: &Options) -> Result<Summary> {
+    let source = canonical_dir(source)?;
+    let dest = absolute(dest)?;
+
+    if dest.exists() && !options.overwrite {
+        return Err(Error::Archive(format!(
+            "`{}` already exists; pass --force to overwrite it",
+            dest.display()
+        )));
+    }
+
+    // Writing the archive into the folder being archived would race the walk
+    // against its own output.
+    if dest.starts_with(&source) {
+        return Err(Error::Archive(format!(
+            "destination `{}` is inside the folder being archived; use --output to write it elsewhere",
+            dest.display()
+        )));
+    }
+
+    let (file_count, source_bytes) = measure(&source, options)?;
+    if file_count == 0 {
+        return Err(Error::Archive(format!(
+            "`{}` contains no files to archive",
+            source.display()
+        )));
+    }
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    tracing::info!(
+        source = %source.display(),
+        dest = %dest.display(),
+        files = file_count,
+        level = options.level,
+        "creating archive"
+    );
+
+    match write_archive(&source, &dest, options) {
+        Ok(()) => {}
+        Err(err) => {
+            // A half-written archive is worse than none: it looks usable.
+            if let Err(cleanup) = std::fs::remove_file(&dest)
+                && cleanup.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %dest.display(), error = %cleanup, "could not remove partial archive");
+            }
+            return Err(err);
+        }
+    }
+
+    let archive_bytes = std::fs::metadata(&dest)?.len();
+
+    Ok(Summary {
+        source,
+        archive: dest,
+        file_count,
+        source_bytes,
+        archive_bytes,
+    })
+}
+
+/// Where an archive for `source` lands when `--output` is not given:
+/// `<folder-name>.7z` in the current directory.
+pub fn default_output_path(source: &Path) -> Result<PathBuf> {
+    let source = canonical_dir(source)?;
+    let name = source.file_name().ok_or_else(|| {
+        Error::Archive(format!(
+            "`{}` has no name to derive an archive name from; pass --output",
+            source.display()
+        ))
+    })?;
+
+    let mut file_name = name.to_os_string();
+    file_name.push(format!(".{EXTENSION}"));
+    Ok(PathBuf::from(file_name))
+}
+
+/// Render a byte count for humans: `1.2 MiB`.
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// Compress the tree. Split out so `create` can clean up after a failure.
+fn write_archive(source: &Path, dest: &Path, options: &Options) -> Result<()> {
+    let mut writer = ArchiveWriter::create(dest).map_err(archive_error)?;
+    writer.set_content_methods(vec![lzma2_options(options).into()]);
+
+    // Pushing from the parent keeps the folder name in the archive; the filter
+    // prunes every sibling, so nothing outside `source` is walked.
+    let root = source.parent().unwrap_or(source);
+    let exclude = options.exclude.clone();
+    let (source_owned, dest_owned) = (source.to_path_buf(), dest.to_path_buf());
+
+    writer
+        .push_source_path(root, move |path| {
+            if path == root {
+                return true;
+            }
+            if !path.starts_with(&source_owned) || path == dest_owned {
+                return false;
+            }
+            let keep = !is_excluded(path, &source_owned, &exclude);
+            if !keep {
+                tracing::debug!(path = %path.display(), "excluded");
+            }
+            keep
+        })
+        .map_err(archive_error)?;
+
+    // `finish` flushes the 7z footer; a failure here means a truncated file.
+    writer.finish()?;
+    Ok(())
+}
+
+fn lzma2_options(options: &Options) -> Lzma2Options {
+    let level = options.level.clamp(MIN_LEVEL, MAX_LEVEL);
+    if options.threads > 1 {
+        Lzma2Options::from_level_mt(level, options.threads, MT_CHUNK_SIZE)
+    } else {
+        Lzma2Options::from_level(level)
+    }
+}
+
+/// Count the files that will be stored and their total size.
+///
+/// Walked separately from the compression pass so the summary is known up
+/// front; the cost is one extra `stat` per file.
+fn measure(source: &Path, options: &Options) -> Result<(u64, u64)> {
+    let mut stack = vec![source.to_path_buf()];
+    let (mut count, mut bytes) = (0u64, 0u64);
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if is_excluded(&path, source, &options.exclude) {
+                continue;
+            }
+
+            // `file_type` does not follow symlinks, so links are skipped rather
+            // than silently duplicating their target (or looping forever).
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() {
+                count += 1;
+                bytes += entry.metadata()?.len();
+            }
+        }
+    }
+
+    Ok((count, bytes))
+}
+
+/// Whether any path component below `root` matches an exclude pattern.
+fn is_excluded(path: &Path, root: &Path, exclude: &[String]) -> bool {
+    if exclude.is_empty() {
+        return false;
+    }
+
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    relative.components().any(|component| match component {
+        Component::Normal(name) => exclude.iter().any(|pattern| name == pattern.as_str()),
+        _ => false,
+    })
+}
+
+/// Resolve `path` and confirm it is a directory we can archive.
+fn canonical_dir(path: &Path) -> Result<PathBuf> {
+    let canonical = path.canonicalize().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            Error::NotFound {
+                kind: "folder",
+                name: path.display().to_string(),
+            }
+        } else {
+            Error::Io(err)
+        }
+    })?;
+
+    if !canonical.is_dir() {
+        return Err(Error::Archive(format!(
+            "`{}` is not a folder",
+            path.display()
+        )));
+    }
+
+    Ok(canonical)
+}
+
+/// Absolute form of a path that need not exist yet.
+fn absolute(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+
+fn archive_error(err: sevenz_rust2::Error) -> Error {
+    Error::Archive(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a small tree: `a.txt`, `sub/b.txt`, `.git/config`.
+    fn fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("photos");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("a.txt"), "hello").unwrap();
+        std::fs::write(root.join("sub").join("b.txt"), "world!").unwrap();
+        std::fs::write(root.join(".git").join("config"), "junk").unwrap();
+        dir
+    }
+
+    #[test]
+    fn archives_a_folder() {
+        let dir = fixture();
+        let source = dir.path().join("photos");
+        let dest = dir.path().join("out").join("photos.7z");
+
+        let summary = create(&source, &dest, &Options::default()).unwrap();
+
+        assert!(dest.is_file());
+        assert_eq!(summary.file_count, 3);
+        assert_eq!(summary.source_bytes, 5 + 6 + 4);
+        assert_eq!(
+            summary.archive_bytes,
+            std::fs::metadata(&dest).unwrap().len()
+        );
+        assert!(summary.ratio().is_some());
+    }
+
+    #[test]
+    fn writes_a_real_7z_container() {
+        let dir = fixture();
+        let dest = dir.path().join("photos.7z");
+        create(&dir.path().join("photos"), &dest, &Options::default()).unwrap();
+
+        // 7z signature: '7z' BC AF 27 1C
+        let bytes = std::fs::read(&dest).unwrap();
+        assert_eq!(&bytes[..6], &[b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C]);
+    }
+
+    #[test]
+    fn the_archive_round_trips_with_the_folder_name_intact() {
+        let dir = fixture();
+        let dest = dir.path().join("photos.7z");
+        create(&dir.path().join("photos"), &dest, &Options::default()).unwrap();
+
+        let out = dir.path().join("restored");
+        sevenz_rust2::decompress_file(&dest, &out).unwrap();
+
+        // Entry names are relative to the source's parent, so the folder
+        // itself is part of every path — same as `7z a photos.7z photos`.
+        assert_eq!(
+            std::fs::read_to_string(out.join("photos/a.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("photos/sub/b.txt")).unwrap(),
+            "world!"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("photos/.git/config")).unwrap(),
+            "junk"
+        );
+    }
+
+    #[test]
+    fn excluded_files_are_absent_from_the_archive() {
+        let dir = fixture();
+        let dest = dir.path().join("photos.7z");
+        let options = Options {
+            exclude: vec![".git".to_string(), "b.txt".to_string()],
+            ..Options::default()
+        };
+        create(&dir.path().join("photos"), &dest, &options).unwrap();
+
+        let out = dir.path().join("restored");
+        sevenz_rust2::decompress_file(&dest, &out).unwrap();
+
+        assert!(out.join("photos/a.txt").exists());
+        assert!(!out.join("photos/.git").exists());
+        assert!(!out.join("photos/sub/b.txt").exists());
+    }
+
+    #[test]
+    fn exclusions_are_matched_by_component() {
+        let dir = fixture();
+        let options = Options {
+            exclude: vec![".git".to_string()],
+            ..Options::default()
+        };
+
+        let summary = create(
+            &dir.path().join("photos"),
+            &dir.path().join("photos.7z"),
+            &options,
+        )
+        .unwrap();
+
+        assert_eq!(summary.file_count, 2, "the .git folder should be skipped");
+        assert_eq!(summary.source_bytes, 5 + 6);
+    }
+
+    #[test]
+    fn refuses_to_overwrite_without_force() {
+        let dir = fixture();
+        let source = dir.path().join("photos");
+        let dest = dir.path().join("photos.7z");
+
+        create(&source, &dest, &Options::default()).unwrap();
+        assert!(matches!(
+            create(&source, &dest, &Options::default()),
+            Err(Error::Archive(_))
+        ));
+
+        let overwrite = Options {
+            overwrite: true,
+            ..Options::default()
+        };
+        create(&source, &dest, &overwrite).unwrap();
+    }
+
+    #[test]
+    fn refuses_to_write_into_the_source_folder() {
+        let dir = fixture();
+        let source = dir.path().join("photos");
+
+        let err = create(&source, &source.join("self.7z"), &Options::default()).unwrap_err();
+        assert!(err.to_string().contains("inside the folder"), "{err}");
+    }
+
+    #[test]
+    fn rejects_missing_and_non_directory_sources() {
+        let dir = fixture();
+
+        assert!(matches!(
+            create(
+                &dir.path().join("absent"),
+                &dir.path().join("x.7z"),
+                &Options::default()
+            ),
+            Err(Error::NotFound { .. })
+        ));
+
+        assert!(matches!(
+            create(
+                &dir.path().join("photos").join("a.txt"),
+                &dir.path().join("x.7z"),
+                &Options::default()
+            ),
+            Err(Error::Archive(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_an_empty_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("empty");
+        std::fs::create_dir(&source).unwrap();
+
+        let err = create(&source, &dir.path().join("x.7z"), &Options::default()).unwrap_err();
+        assert!(err.to_string().contains("no files"), "{err}");
+    }
+
+    #[test]
+    fn default_output_is_the_folder_name() {
+        let dir = fixture();
+        assert_eq!(
+            default_output_path(&dir.path().join("photos")).unwrap(),
+            PathBuf::from("photos.7z")
+        );
+    }
+
+    #[test]
+    fn byte_sizes_are_human_readable() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        assert_eq!(human_bytes(1536), "1.5 KiB");
+        assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MiB");
+    }
+}

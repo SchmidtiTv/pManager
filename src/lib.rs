@@ -5,9 +5,11 @@
 //! a library crate means integration tests and future front-ends can drive the
 //! same code without going through a process boundary.
 
+pub mod archive;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod db;
 pub mod error;
 pub mod logging;
 
@@ -23,6 +25,8 @@ pub fn run(cli: Cli) -> Result<()> {
     let ctx = Context::new(globals);
 
     match &command {
+        Command::Archive(args) => commands::archive::run(args, &ctx),
+        Command::Db(args) => commands::db::run(args, &ctx),
         Command::Config(args) => commands::config::run(args, &ctx),
         Command::Completions(args) => commands::completions::run(args, &ctx),
     }

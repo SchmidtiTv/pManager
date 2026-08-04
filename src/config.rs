@@ -24,6 +24,9 @@ const APP_NAME: &str = "vmanager";
 /// File name looked up inside the platform config directory.
 const CONFIG_FILE: &str = "config.toml";
 
+/// Database file name inside the data directory.
+const DATABASE_FILE: &str = "vmanager.db";
+
 /// Starter file written by `vmanager config init`.
 const TEMPLATE: &str = "\
 # vManager configuration.
@@ -33,6 +36,9 @@ const TEMPLATE: &str = "\
 
 # Directory where vManager keeps its data.
 # data_dir = \"/var/lib/vmanager\"
+
+# SQLite database file. Defaults to `vmanager.db` inside data_dir.
+# database = \"/var/lib/vmanager/vmanager.db\"
 ";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +47,9 @@ pub struct Config {
     /// Directory where vManager keeps its data. Defaults to the platform data
     /// directory when unset.
     pub data_dir: Option<PathBuf>,
+
+    /// SQLite database file. Defaults to `vmanager.db` inside `data_dir`.
+    pub database: Option<PathBuf>,
 }
 
 impl Config {
@@ -111,6 +120,7 @@ impl Config {
     pub fn effective(&self) -> Result<Self> {
         Ok(Self {
             data_dir: Some(self.data_dir()?),
+            database: Some(self.database_path()?),
         })
     }
 
@@ -122,6 +132,14 @@ impl Config {
                 .ok_or(Error::NoConfigDir)?
                 .data_dir()
                 .to_path_buf()),
+        }
+    }
+
+    /// The SQLite database path, resolved against `data_dir` when unset.
+    pub fn database_path(&self) -> Result<PathBuf> {
+        match &self.database {
+            Some(path) => Ok(path.clone()),
+            None => Ok(self.data_dir()?.join(DATABASE_FILE)),
         }
     }
 
@@ -187,6 +205,7 @@ mod tests {
         let path = dir.path().join("nested").join("config.toml");
         let config = Config {
             data_dir: Some(PathBuf::from("/srv/vmanager")),
+            database: Some(PathBuf::from("/srv/vmanager/db.sqlite")),
         };
 
         config.save(&path, false).unwrap();
@@ -216,6 +235,27 @@ mod tests {
     }
 
     #[test]
+    fn database_defaults_to_a_file_inside_the_data_dir() {
+        let config = Config {
+            data_dir: Some(PathBuf::from("/srv/vmanager")),
+            database: None,
+        };
+        assert_eq!(
+            config.database_path().unwrap(),
+            PathBuf::from("/srv/vmanager/vmanager.db")
+        );
+
+        let explicit = Config {
+            data_dir: Some(PathBuf::from("/srv/vmanager")),
+            database: Some(PathBuf::from("/elsewhere/db.sqlite")),
+        };
+        assert_eq!(
+            explicit.database_path().unwrap(),
+            PathBuf::from("/elsewhere/db.sqlite")
+        );
+    }
+
+    #[test]
     fn effective_config_fills_in_defaults() {
         let effective = Config::default().effective().unwrap();
         assert_eq!(
@@ -226,6 +266,7 @@ mod tests {
         // An explicit value is left alone.
         let explicit = Config {
             data_dir: Some(PathBuf::from("/srv/vmanager")),
+            database: Some(PathBuf::from("/srv/vmanager/db.sqlite")),
         };
         assert_eq!(explicit.effective().unwrap(), explicit);
     }
