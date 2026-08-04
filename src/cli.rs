@@ -9,26 +9,26 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// Long help text shown by `vmanager --help`.
+/// Long help text shown by `pmanager --help`.
 const AFTER_HELP: &str = "\
 Getting started:
-  vmanager folder add C:\\Tools\\Blender   Watch a tool's version folders
-  vmanager list                           See what each folder holds
-  vmanager run --dry-run                  See what would be archived
-  vmanager run                            Archive all but the newest versions
-  vmanager schedule install               Run it daily at 03:00
+  pmanager folder add C:\\Tools\\Blender   Watch a tool's version folders
+  pmanager list                           See what each folder holds
+  pmanager run --dry-run                  See what would be archived
+  pmanager run                            Archive all but the newest versions
+  pmanager schedule install               Run it daily at 03:00
 
 Configuration (optional; every key has a default):
-  Windows           %APPDATA%\\vmanager\\config.toml
-  Linux             ~/.config/vmanager/config.toml
-  macOS             ~/Library/Application Support/vmanager/config.toml
+  Windows           %APPDATA%\\pmanager\\config.toml
+  Linux             ~/.config/pmanager/config.toml
+  macOS             ~/Library/Application Support/pmanager/config.toml
 
   keep_versions, compression_level, compression_threads, data_dir, database
 
 Environment:
-  VMANAGER_CONFIG   Path to the config file (overridden by --config)
+  PMANAGER_CONFIG   Path to the config file (overridden by --config)
   NO_COLOR          Disable colored output
-  RUST_LOG          Fine-grained log filter, e.g. `vmanager=debug`
+  RUST_LOG          Fine-grained log filter, e.g. `pmanager=debug`
 
 Exit codes:
   0  success               3  configuration error    6  archive error
@@ -37,9 +37,9 @@ Exit codes:
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "vmanager",
+    name = "pmanager",
     version,
-    about = "vManager command line interface",
+    about = "pManager command line interface",
     propagate_version = true,
     after_help = AFTER_HELP,
     // Print help instead of a bare usage error when invoked with no arguments.
@@ -70,7 +70,7 @@ pub struct GlobalArgs {
         long,
         global = true,
         value_name = "FILE",
-        env = "VMANAGER_CONFIG"
+        env = "PMANAGER_CONFIG"
     )]
     pub config: Option<PathBuf>,
 
@@ -140,7 +140,7 @@ pub enum Command {
     /// Show every version of every registered folder, unpacked and archived
     List(crate::commands::list::Args),
 
-    /// Register the folders that `vmanager run` sweeps
+    /// Register the folders that `pmanager run` sweeps
     Folder(crate::commands::folder::Args),
 
     /// Install or remove the scheduled daily run
@@ -167,23 +167,23 @@ mod tests {
                 .log_level()
         };
 
-        assert_eq!(parse(&["vmanager", "list"]), tracing::Level::WARN);
-        assert_eq!(parse(&["vmanager", "-v", "list"]), tracing::Level::INFO);
-        assert_eq!(parse(&["vmanager", "-vvv", "list"]), tracing::Level::TRACE);
+        assert_eq!(parse(&["pmanager", "list"]), tracing::Level::WARN);
+        assert_eq!(parse(&["pmanager", "-v", "list"]), tracing::Level::INFO);
+        assert_eq!(parse(&["pmanager", "-vvv", "list"]), tracing::Level::TRACE);
         assert_eq!(
-            parse(&["vmanager", "--quiet", "list"]),
+            parse(&["pmanager", "--quiet", "list"]),
             tracing::Level::ERROR
         );
     }
 
     #[test]
     fn verbose_and_quiet_conflict() {
-        assert!(Cli::try_parse_from(["vmanager", "-v", "-q", "list"]).is_err());
+        assert!(Cli::try_parse_from(["pmanager", "-v", "-q", "list"]).is_err());
     }
 
     #[test]
     fn globals_are_accepted_after_the_subcommand() {
-        let cli = Cli::try_parse_from(["vmanager", "list", "--color", "never"])
+        let cli = Cli::try_parse_from(["pmanager", "list", "--color", "never"])
             .expect("globals should propagate to subcommands");
         assert_eq!(cli.globals.color, ColorChoice::Never);
     }

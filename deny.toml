@@ -11,7 +11,7 @@
 version = 2
 confidence-threshold = 0.9
 
-# vmanager itself carries no `license` field (it is `publish = false`), and
+# pmanager itself carries no `license` field (it is `publish = false`), and
 # picking one is the repository owner's decision, not a dependency question.
 # Skip unpublished workspace crates so the check stays about third-party code.
 # Once a project license is chosen, set `license` in Cargo.toml; this can then

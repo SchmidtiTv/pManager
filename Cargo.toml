@@ -1,19 +1,19 @@
 [package]
-name = "vmanager"
+name = "pmanager"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
-description = "vManager command line interface"
-repository = "https://github.com/SchmidtiTv/vManager"
+description = "pManager command line interface"
+repository = "https://github.com/SchmidtiTv/pManager"
 readme = "README.md"
 publish = false
 
 [[bin]]
-name = "vmanager"
+name = "pmanager"
 path = "src/main.rs"
 
 [lib]
-name = "vmanager"
+name = "pmanager"
 path = "src/lib.rs"
 
 [dependencies]
