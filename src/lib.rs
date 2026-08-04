@@ -28,6 +28,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
     match &command {
         Command::Run(args) => commands::run::run(args, &ctx),
+        Command::List(args) => commands::list::run(args, &ctx),
         Command::Folder(args) => commands::folder::run(args, &ctx),
         Command::Schedule(args) => commands::schedule::run(args, &ctx),
     }
