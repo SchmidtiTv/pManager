@@ -11,6 +11,19 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 /// Long help text shown by `vmanager --help`.
 const AFTER_HELP: &str = "\
+Getting started:
+  vmanager folder add C:\\Tools\\Blender   Watch a tool's version folders
+  vmanager run --dry-run                  See what would be archived
+  vmanager run                            Archive all but the newest versions
+  vmanager schedule install               Run it daily at 03:00
+
+Configuration (optional; every key has a default):
+  Windows           %APPDATA%\\vmanager\\config.toml
+  Linux             ~/.config/vmanager/config.toml
+  macOS             ~/Library/Application Support/vmanager/config.toml
+
+  keep_versions, compression_level, compression_threads, data_dir, database
+
 Environment:
   VMANAGER_CONFIG   Path to the config file (overridden by --config)
   NO_COLOR          Disable colored output
@@ -128,18 +141,6 @@ pub enum Command {
 
     /// Install or remove the scheduled daily run
     Schedule(crate::commands::schedule::Args),
-
-    /// Create and track .7z archives
-    Archive(crate::commands::archive::Args),
-
-    /// Inspect the SQLite database
-    Db(crate::commands::db::Args),
-
-    /// Inspect and create the configuration file
-    Config(crate::commands::config::Args),
-
-    /// Generate a shell completion script
-    Completions(crate::commands::completions::Args),
 }
 
 #[cfg(test)]
@@ -162,29 +163,29 @@ mod tests {
                 .log_level()
         };
 
-        assert_eq!(parse(&["vmanager", "config", "path"]), tracing::Level::WARN);
+        assert_eq!(parse(&["vmanager", "folder", "list"]), tracing::Level::WARN);
         assert_eq!(
-            parse(&["vmanager", "-v", "config", "path"]),
+            parse(&["vmanager", "-v", "folder", "list"]),
             tracing::Level::INFO
         );
         assert_eq!(
-            parse(&["vmanager", "-vvv", "config", "path"]),
+            parse(&["vmanager", "-vvv", "folder", "list"]),
             tracing::Level::TRACE
         );
         assert_eq!(
-            parse(&["vmanager", "--quiet", "config", "path"]),
+            parse(&["vmanager", "--quiet", "folder", "list"]),
             tracing::Level::ERROR
         );
     }
 
     #[test]
     fn verbose_and_quiet_conflict() {
-        assert!(Cli::try_parse_from(["vmanager", "-v", "-q", "config", "path"]).is_err());
+        assert!(Cli::try_parse_from(["vmanager", "-v", "-q", "folder", "list"]).is_err());
     }
 
     #[test]
     fn globals_are_accepted_after_the_subcommand() {
-        let cli = Cli::try_parse_from(["vmanager", "config", "path", "--color", "never"])
+        let cli = Cli::try_parse_from(["vmanager", "folder", "list", "--color", "never"])
             .expect("globals should propagate to subcommands");
         assert_eq!(cli.globals.color, ColorChoice::Never);
     }

@@ -16,7 +16,7 @@ fn main() -> ExitCode {
 
     match vmanager::run(cli) {
         Ok(()) => ExitCode::from(exit::SUCCESS),
-        // `vmanager config show | head -1` closes stdout early; that is the
+        // `vmanager folder list | head -1` closes stdout early; that is the
         // pipeline working as intended, not a failure worth reporting.
         Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::BrokenPipe => {
             ExitCode::from(exit::SUCCESS)
