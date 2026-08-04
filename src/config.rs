@@ -27,6 +27,9 @@ const CONFIG_FILE: &str = "config.toml";
 /// Database file name inside the data directory.
 const DATABASE_FILE: &str = "vmanager.db";
 
+/// How many versions of a tool stay unpacked when `keep_versions` is unset.
+pub const DEFAULT_KEEP_VERSIONS: u32 = 2;
+
 /// Starter file written by `vmanager config init`.
 const TEMPLATE: &str = "\
 # vManager configuration.
@@ -39,6 +42,16 @@ const TEMPLATE: &str = "\
 
 # SQLite database file. Defaults to `vmanager.db` inside data_dir.
 # database = \"/var/lib/vmanager/vmanager.db\"
+
+# How many versions of each registered folder stay unpacked. Everything older
+# is compressed to .7z by `vmanager run`. Must be at least 1.
+# keep_versions = 2
+
+# Compression level used by `vmanager run`: 0 is fastest, 9 is smallest.
+# compression_level = 6
+
+# Compression threads. More threads are faster and compress slightly worse.
+# compression_threads = 1
 ";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +63,17 @@ pub struct Config {
 
     /// SQLite database file. Defaults to `vmanager.db` inside `data_dir`.
     pub database: Option<PathBuf>,
+
+    /// Versions of each registered folder to keep unpacked. Defaults to
+    /// [`DEFAULT_KEEP_VERSIONS`].
+    pub keep_versions: Option<u32>,
+
+    /// LZMA2 level used by `vmanager run`. Defaults to
+    /// [`crate::archive::DEFAULT_LEVEL`].
+    pub compression_level: Option<u32>,
+
+    /// Compression threads used by `vmanager run`. Defaults to 1.
+    pub compression_threads: Option<u32>,
 }
 
 impl Config {
@@ -121,7 +145,49 @@ impl Config {
         Ok(Self {
             data_dir: Some(self.data_dir()?),
             database: Some(self.database_path()?),
+            keep_versions: Some(self.keep_versions()?),
+            compression_level: Some(self.compression_level()?),
+            compression_threads: Some(self.compression_threads()?),
         })
+    }
+
+    /// How many versions to keep unpacked.
+    ///
+    /// Zero is rejected rather than clamped: it would mean "archive every
+    /// version", which is never what someone means by a *keep* count, and
+    /// silently correcting it would hide the typo.
+    pub fn keep_versions(&self) -> Result<u32> {
+        match self.keep_versions {
+            Some(0) => Err(Error::Other(anyhow::anyhow!(
+                "`keep_versions` must be at least 1"
+            ))),
+            Some(keep) => Ok(keep),
+            None => Ok(DEFAULT_KEEP_VERSIONS),
+        }
+    }
+
+    /// LZMA2 compression level for `vmanager run`.
+    pub fn compression_level(&self) -> Result<u32> {
+        match self.compression_level {
+            Some(level) if level > crate::archive::MAX_LEVEL => Err(Error::Other(anyhow::anyhow!(
+                "`compression_level` must be between {} and {}",
+                crate::archive::MIN_LEVEL,
+                crate::archive::MAX_LEVEL
+            ))),
+            Some(level) => Ok(level),
+            None => Ok(crate::archive::DEFAULT_LEVEL),
+        }
+    }
+
+    /// Compression threads for `vmanager run`.
+    pub fn compression_threads(&self) -> Result<u32> {
+        match self.compression_threads {
+            Some(0) => Err(Error::Other(anyhow::anyhow!(
+                "`compression_threads` must be at least 1"
+            ))),
+            Some(threads) => Ok(threads),
+            None => Ok(1),
+        }
     }
 
     /// The data directory, resolved against the platform default when unset.
@@ -214,6 +280,7 @@ mod tests {
         let config = Config {
             data_dir: Some(PathBuf::from("/srv/vmanager")),
             database: Some(PathBuf::from("/srv/vmanager/db.sqlite")),
+            ..Config::default()
         };
 
         config.save(&path, false).unwrap();
@@ -247,6 +314,7 @@ mod tests {
         let config = Config {
             data_dir: Some(PathBuf::from("/srv/vmanager")),
             database: None,
+            ..Config::default()
         };
         assert_eq!(
             config.database_path().unwrap(),
@@ -256,6 +324,7 @@ mod tests {
         let explicit = Config {
             data_dir: Some(PathBuf::from("/srv/vmanager")),
             database: Some(PathBuf::from("/elsewhere/db.sqlite")),
+            ..Config::default()
         };
         assert_eq!(
             explicit.database_path().unwrap(),
@@ -270,13 +339,68 @@ mod tests {
             effective.data_dir,
             Some(Config::default().data_dir().unwrap())
         );
+        assert_eq!(effective.keep_versions, Some(DEFAULT_KEEP_VERSIONS));
+        assert_eq!(
+            effective.compression_level,
+            Some(crate::archive::DEFAULT_LEVEL)
+        );
+        assert_eq!(effective.compression_threads, Some(1));
 
-        // An explicit value is left alone.
+        // Every explicit value is left alone.
         let explicit = Config {
             data_dir: Some(PathBuf::from("/srv/vmanager")),
             database: Some(PathBuf::from("/srv/vmanager/db.sqlite")),
+            keep_versions: Some(5),
+            compression_level: Some(9),
+            compression_threads: Some(4),
         };
         assert_eq!(explicit.effective().unwrap(), explicit);
+    }
+
+    #[test]
+    fn keep_versions_defaults_and_rejects_zero() {
+        assert_eq!(
+            Config::default().keep_versions().unwrap(),
+            DEFAULT_KEEP_VERSIONS
+        );
+
+        let explicit = Config {
+            keep_versions: Some(4),
+            ..Config::default()
+        };
+        assert_eq!(explicit.keep_versions().unwrap(), 4);
+
+        // Keeping zero versions would archive every copy of a tool, which is
+        // never what the key means — better to complain than to guess.
+        let zero = Config {
+            keep_versions: Some(0),
+            ..Config::default()
+        };
+        let err = zero.keep_versions().unwrap_err();
+        assert!(err.to_string().contains("at least 1"), "{err}");
+    }
+
+    #[test]
+    fn compression_settings_are_validated() {
+        let too_high = Config {
+            compression_level: Some(crate::archive::MAX_LEVEL + 1),
+            ..Config::default()
+        };
+        assert!(too_high.compression_level().is_err());
+
+        let no_threads = Config {
+            compression_threads: Some(0),
+            ..Config::default()
+        };
+        assert!(no_threads.compression_threads().is_err());
+
+        let valid = Config {
+            compression_level: Some(0),
+            compression_threads: Some(8),
+            ..Config::default()
+        };
+        assert_eq!(valid.compression_level().unwrap(), 0);
+        assert_eq!(valid.compression_threads().unwrap(), 8);
     }
 
     #[test]
