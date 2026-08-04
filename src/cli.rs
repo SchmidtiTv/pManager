@@ -17,8 +17,9 @@ Environment:
   RUST_LOG          Fine-grained log filter, e.g. `vmanager=debug`
 
 Exit codes:
-  0  success            2  invalid arguments      4  not found
-  1  failure            3  configuration error  130  interrupted";
+  0  success               3  configuration error    6  archive error
+  1  failure               4  not found            130  interrupted
+  2  invalid arguments     5  database error";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -119,6 +120,12 @@ impl std::fmt::Display for ColorChoice {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Create and track .7z archives
+    Archive(crate::commands::archive::Args),
+
+    /// Inspect the SQLite database
+    Db(crate::commands::db::Args),
+
     /// Inspect and create the configuration file
     Config(crate::commands::config::Args),
 

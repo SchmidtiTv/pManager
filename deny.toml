@@ -1,0 +1,43 @@
+# cargo-deny configuration — https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally with:
+#   cargo install cargo-deny && cargo deny check
+#
+# The licenses section is the important one: it fails the build if a dependency
+# (or a new version of one) arrives under a license that is not on this list,
+# so a copyleft crate can never slip into the tree unnoticed.
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+
+# Permissive licenses only — all of these allow commercial and closed-source
+# distribution, subject to keeping the copyright/license notices.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",   # file-level copyleft; obligations only apply if we modify the crate's own files
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

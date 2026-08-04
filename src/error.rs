@@ -25,6 +25,10 @@ pub mod exit {
     pub const CONFIG: u8 = 3;
     /// The requested resource does not exist.
     pub const NOT_FOUND: u8 = 4;
+    /// The database could not be opened, migrated or queried.
+    pub const DATABASE: u8 = 5;
+    /// An archive could not be created.
+    pub const ARCHIVE: u8 = 6;
     /// The run was cancelled by the user (128 + SIGINT).
     pub const INTERRUPTED: u8 = 130;
 }
@@ -55,6 +59,18 @@ pub enum Error {
     #[error("could not determine a config directory; pass --config explicitly")]
     NoConfigDir,
 
+    /// The database rejected an operation.
+    #[error("database error: {0}")]
+    Database(String),
+
+    /// SQLite itself failed.
+    #[error("database error")]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// An archive could not be created.
+    #[error("{0}")]
+    Archive(String),
+
     /// The user interrupted the run.
     #[error("interrupted")]
     Interrupted,
@@ -75,6 +91,8 @@ impl Error {
             Error::ConfigRead { .. } | Error::ConfigParse { .. } | Error::NoConfigDir => {
                 exit::CONFIG
             }
+            Error::Database(_) | Error::Sqlite(_) => exit::DATABASE,
+            Error::Archive(_) => exit::ARCHIVE,
             Error::Interrupted => exit::INTERRUPTED,
             Error::Io(_) | Error::Other(_) => exit::FAILURE,
         }

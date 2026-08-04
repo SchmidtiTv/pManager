@@ -2,7 +2,7 @@
 name = "vmanager"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.93"
 description = "vManager command line interface"
 repository = "https://github.com/SchmidtiTv/vManager"
 readme = "README.md"
@@ -21,7 +21,9 @@ anyhow = "1.0.104"
 clap = { version = "4.6.5", features = ["derive", "env", "wrap_help"] }
 clap_complete = "4.6.8"
 directories = "6.0.0"
+rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
+sevenz-rust2 = { version = "0.21", default-features = false, features = ["compress", "util"] }
 thiserror = "2.0.19"
 toml = "1.1.4"
 tracing = "0.1.44"

@@ -4,14 +4,17 @@
 //! [`crate::cli::Command`] embeds — and a `run` function taking the shared
 //! [`Context`].
 
+pub mod archive;
 pub mod completions;
 pub mod config;
+pub mod db;
 
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
 use crate::cli::GlobalArgs;
 use crate::config::Config;
+use crate::db::Database;
 use crate::error::Result;
 
 /// State shared by every subcommand.
@@ -49,6 +52,15 @@ impl Context {
     /// The path the configuration was read from.
     pub fn config_path(&self) -> Result<&Path> {
         self.load().map(|(_, path)| path.as_path())
+    }
+
+    /// Open the SQLite database, creating and migrating it if necessary.
+    ///
+    /// Returned by value rather than cached: a connection is cheap, and
+    /// holding one open for the whole process would keep a write lock alive
+    /// longer than any single command needs it.
+    pub fn open_database(&self) -> Result<Database> {
+        Database::open(&self.config()?.database_path()?)
     }
 
     fn load(&self) -> Result<&(Config, PathBuf)> {
