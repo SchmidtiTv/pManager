@@ -1,7 +1,7 @@
 //! Diagnostic logging setup.
 //!
 //! Logs go to stderr so that stdout stays clean for machine-readable output;
-//! `vmanager list > versions.txt` should never pick up a log line.
+//! `pmanager list > versions.txt` should never pick up a log line.
 
 use crate::cli::GlobalArgs;
 
