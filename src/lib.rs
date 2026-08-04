@@ -12,6 +12,8 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod logging;
+pub mod sweep;
+pub mod version;
 
 pub use cli::Cli;
 pub use error::{Error, Result};
@@ -25,9 +27,9 @@ pub fn run(cli: Cli) -> Result<()> {
     let ctx = Context::new(globals);
 
     match &command {
-        Command::Archive(args) => commands::archive::run(args, &ctx),
-        Command::Db(args) => commands::db::run(args, &ctx),
-        Command::Config(args) => commands::config::run(args, &ctx),
-        Command::Completions(args) => commands::completions::run(args, &ctx),
+        Command::Run(args) => commands::run::run(args, &ctx),
+        Command::List(args) => commands::list::run(args, &ctx),
+        Command::Folder(args) => commands::folder::run(args, &ctx),
+        Command::Schedule(args) => commands::schedule::run(args, &ctx),
     }
 }

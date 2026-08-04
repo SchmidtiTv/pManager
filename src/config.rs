@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::error::{Error, Result};
 
@@ -27,21 +27,10 @@ const CONFIG_FILE: &str = "config.toml";
 /// Database file name inside the data directory.
 const DATABASE_FILE: &str = "vmanager.db";
 
-/// Starter file written by `vmanager config init`.
-const TEMPLATE: &str = "\
-# vManager configuration.
-#
-# Every key is optional; uncomment a line to override the built-in default.
-# Run `vmanager config show` to see the values currently in effect.
+/// How many versions of a tool stay unpacked when `keep_versions` is unset.
+pub const DEFAULT_KEEP_VERSIONS: u32 = 2;
 
-# Directory where vManager keeps its data.
-# data_dir = \"/var/lib/vmanager\"
-
-# SQLite database file. Defaults to `vmanager.db` inside data_dir.
-# database = \"/var/lib/vmanager/vmanager.db\"
-";
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Directory where vManager keeps its data. Defaults to the platform data
@@ -50,6 +39,17 @@ pub struct Config {
 
     /// SQLite database file. Defaults to `vmanager.db` inside `data_dir`.
     pub database: Option<PathBuf>,
+
+    /// Versions of each registered folder to keep unpacked. Defaults to
+    /// [`DEFAULT_KEEP_VERSIONS`].
+    pub keep_versions: Option<u32>,
+
+    /// LZMA2 level used by `vmanager run`. Defaults to
+    /// [`crate::archive::DEFAULT_LEVEL`].
+    pub compression_level: Option<u32>,
+
+    /// Compression threads used by `vmanager run`. Defaults to 1.
+    pub compression_threads: Option<u32>,
 }
 
 impl Config {
@@ -92,36 +92,43 @@ impl Config {
         Ok((config, path))
     }
 
-    /// Write the config to `path`, creating parent directories as needed.
+    /// How many versions to keep unpacked.
     ///
-    /// Refuses to clobber an existing file unless `overwrite` is set.
-    pub fn save(&self, path: &Path, overwrite: bool) -> Result<()> {
-        write_new(path, &self.to_toml(), overwrite)
+    /// Zero is rejected rather than clamped: it would mean "archive every
+    /// version", which is never what someone means by a *keep* count, and
+    /// silently correcting it would hide the typo.
+    pub fn keep_versions(&self) -> Result<u32> {
+        match self.keep_versions {
+            Some(0) => Err(Error::Other(anyhow::anyhow!(
+                "`keep_versions` must be at least 1"
+            ))),
+            Some(keep) => Ok(keep),
+            None => Ok(DEFAULT_KEEP_VERSIONS),
+        }
     }
 
-    /// Write the commented starter file used by `vmanager config init`.
-    ///
-    /// A serialized [`Config::default`] would be an empty document — every
-    /// field is optional — so the template documents the keys instead.
-    pub fn write_template(path: &Path, overwrite: bool) -> Result<()> {
-        write_new(path, TEMPLATE, overwrite)
+    /// LZMA2 compression level for `vmanager run`.
+    pub fn compression_level(&self) -> Result<u32> {
+        match self.compression_level {
+            Some(level) if level > crate::archive::MAX_LEVEL => Err(Error::Other(anyhow::anyhow!(
+                "`compression_level` must be between {} and {}",
+                crate::archive::MIN_LEVEL,
+                crate::archive::MAX_LEVEL
+            ))),
+            Some(level) => Ok(level),
+            None => Ok(crate::archive::DEFAULT_LEVEL),
+        }
     }
 
-    /// Render the config as a TOML document.
-    pub fn to_toml(&self) -> String {
-        // `Config` contains only plain, serializable data, so this cannot fail.
-        toml::to_string_pretty(self).expect("config is serializable")
-    }
-
-    /// The config with every unset field replaced by its resolved default.
-    ///
-    /// This is what `vmanager config show` prints: the values the application
-    /// will actually use, not just the ones the user happened to write down.
-    pub fn effective(&self) -> Result<Self> {
-        Ok(Self {
-            data_dir: Some(self.data_dir()?),
-            database: Some(self.database_path()?),
-        })
+    /// Compression threads for `vmanager run`.
+    pub fn compression_threads(&self) -> Result<u32> {
+        match self.compression_threads {
+            Some(0) => Err(Error::Other(anyhow::anyhow!(
+                "`compression_threads` must be at least 1"
+            ))),
+            Some(threads) => Ok(threads),
+            None => Ok(1),
+        }
     }
 
     /// The data directory, resolved against the platform default when unset.
@@ -150,24 +157,6 @@ impl Config {
             .config_dir()
             .to_path_buf())
     }
-}
-
-/// Write `contents` to `path`, creating parent directories as needed and
-/// refusing to overwrite an existing file unless asked to.
-fn write_new(path: &Path, contents: &str, overwrite: bool) -> Result<()> {
-    if path.exists() && !overwrite {
-        return Err(Error::Other(anyhow::anyhow!(
-            "`{}` already exists; pass --force to overwrite it",
-            path.display()
-        )));
-    }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    std::fs::write(path, contents)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -208,38 +197,21 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_toml() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join("config.toml");
-        let config = Config {
-            data_dir: Some(PathBuf::from("/srv/vmanager")),
-            database: Some(PathBuf::from("/srv/vmanager/db.sqlite")),
-        };
-
-        config.save(&path, false).unwrap();
-        let (loaded, _) = Config::load(Some(&path)).unwrap();
-        assert_eq!(loaded, config);
-    }
-
-    #[test]
-    fn save_refuses_to_clobber_without_force() {
+    fn a_hand_written_file_is_read_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let config = Config::default();
+        std::fs::write(
+            &path,
+            "data_dir = '/srv/vmanager'\nkeep_versions = 4\ncompression_level = 9\n",
+        )
+        .unwrap();
 
-        config.save(&path, false).unwrap();
-        assert!(config.save(&path, false).is_err());
-        config.save(&path, true).unwrap();
-    }
-
-    #[test]
-    fn template_parses_back_to_the_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-
-        Config::write_template(&path, false).unwrap();
         let (loaded, _) = Config::load(Some(&path)).unwrap();
-        assert_eq!(loaded, Config::default());
+        assert_eq!(loaded.data_dir, Some(PathBuf::from("/srv/vmanager")));
+        assert_eq!(loaded.keep_versions().unwrap(), 4);
+        assert_eq!(loaded.compression_level().unwrap(), 9);
+        // Keys the file left out keep their defaults.
+        assert_eq!(loaded.compression_threads().unwrap(), 1);
     }
 
     #[test]
@@ -247,6 +219,7 @@ mod tests {
         let config = Config {
             data_dir: Some(PathBuf::from("/srv/vmanager")),
             database: None,
+            ..Config::default()
         };
         assert_eq!(
             config.database_path().unwrap(),
@@ -256,6 +229,7 @@ mod tests {
         let explicit = Config {
             data_dir: Some(PathBuf::from("/srv/vmanager")),
             database: Some(PathBuf::from("/elsewhere/db.sqlite")),
+            ..Config::default()
         };
         assert_eq!(
             explicit.database_path().unwrap(),
@@ -264,19 +238,49 @@ mod tests {
     }
 
     #[test]
-    fn effective_config_fills_in_defaults() {
-        let effective = Config::default().effective().unwrap();
+    fn keep_versions_defaults_and_rejects_zero() {
         assert_eq!(
-            effective.data_dir,
-            Some(Config::default().data_dir().unwrap())
+            Config::default().keep_versions().unwrap(),
+            DEFAULT_KEEP_VERSIONS
         );
 
-        // An explicit value is left alone.
         let explicit = Config {
-            data_dir: Some(PathBuf::from("/srv/vmanager")),
-            database: Some(PathBuf::from("/srv/vmanager/db.sqlite")),
+            keep_versions: Some(4),
+            ..Config::default()
         };
-        assert_eq!(explicit.effective().unwrap(), explicit);
+        assert_eq!(explicit.keep_versions().unwrap(), 4);
+
+        // Keeping zero versions would archive every copy of a tool, which is
+        // never what the key means — better to complain than to guess.
+        let zero = Config {
+            keep_versions: Some(0),
+            ..Config::default()
+        };
+        let err = zero.keep_versions().unwrap_err();
+        assert!(err.to_string().contains("at least 1"), "{err}");
+    }
+
+    #[test]
+    fn compression_settings_are_validated() {
+        let too_high = Config {
+            compression_level: Some(crate::archive::MAX_LEVEL + 1),
+            ..Config::default()
+        };
+        assert!(too_high.compression_level().is_err());
+
+        let no_threads = Config {
+            compression_threads: Some(0),
+            ..Config::default()
+        };
+        assert!(no_threads.compression_threads().is_err());
+
+        let valid = Config {
+            compression_level: Some(0),
+            compression_threads: Some(8),
+            ..Config::default()
+        };
+        assert_eq!(valid.compression_level().unwrap(), 0);
+        assert_eq!(valid.compression_threads().unwrap(), 8);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Diagnostic logging setup.
 //!
 //! Logs go to stderr so that stdout stays clean for machine-readable output;
-//! `vmanager config show > config.toml` should never pick up a log line.
+//! `vmanager list > versions.txt` should never pick up a log line.
 
 use crate::cli::GlobalArgs;
 

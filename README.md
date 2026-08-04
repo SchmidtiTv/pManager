@@ -1,9 +1,22 @@
 # vManager
 
-A command line application written in Rust.
+Keeps the disk from filling up with old versions of your tools.
 
-It archives folders into `.7z` files and keeps a record of every archive in a
-local SQLite database.
+Point vManager at a folder that holds one subfolder per version, and once a day
+it compresses everything except the newest few into `.7z` archives and deletes
+the folders it compressed. The old versions stay recoverable; the space they
+were using does not.
+
+```
+C:\Tools\Blender\          before            C:\Tools\Blender\        after
+  4.1\   1.9 GiB                               4.1.7z   412 MiB
+  4.2\   2.0 GiB                               4.2.7z   430 MiB
+  4.3\   2.1 GiB                               4.3\     2.1 GiB
+  4.10\  2.2 GiB                               4.10\    2.2 GiB
+```
+
+Written in Rust, with a local SQLite database recording every folder it watches
+and every archive it has made.
 
 ## Building
 
@@ -17,6 +30,17 @@ Requires Rust 1.93 or newer (edition 2024). SQLite is compiled in from source,
 so there is nothing to install first — and no `7z` binary is needed either;
 compression is pure Rust.
 
+## Getting started
+
+```sh
+vmanager folder add C:\Tools\Blender     # watch this tool's versions
+vmanager folder add C:\Tools\Godot --keep 3
+vmanager list                            # see what you have
+vmanager run --dry-run                   # see what would be archived
+vmanager run                             # do it
+vmanager schedule install                # …and every day at 03:00
+```
+
 ## Usage
 
 ```
@@ -27,17 +51,13 @@ vmanager [OPTIONS] <COMMAND>
 
 | Command | Description |
 | --- | --- |
-| `archive create <FOLDER>` | Compress a folder into a `.7z` archive |
-| `archive list` | List archives recorded in the database |
-| `archive forget <ID>` | Remove a record, leaving the archive file alone |
-| `archive prune` | Drop records whose archive file is gone |
-| `db path` | Print the database path (without creating it) |
-| `db init` | Create the database and run pending migrations |
-| `db status` | Show schema version and row counts |
-| `config show` | Print the configuration actually in effect, as TOML |
-| `config path` | Print the path of the configuration file |
-| `config init` | Write a commented starter configuration file |
-| `completions <SHELL>` | Print a shell completion script |
+| `run` | Sweep every registered folder: archive all but the newest versions |
+| `list` | Show every version of every registered folder |
+| `folder add <FOLDER>` | Register a folder whose versions should be managed |
+| `folder remove <FOLDER>` | Unregister a folder; nothing on disk is touched |
+| `schedule install` | Register the daily run with Windows Task Scheduler |
+| `schedule uninstall` | Remove the scheduled task |
+| `schedule status` | Show the scheduled task |
 
 ### Global options
 
@@ -72,45 +92,149 @@ These are accepted before or after the subcommand.
 | `6` | Archive error |
 | `130` | Interrupted |
 
-## Archiving
+## Managing versions
+
+A **registered folder** is the parent of one tool's versions, not a version
+itself. Register `C:\Tools\Blender`, the folder that contains `4.1`, `4.2` and
+`4.3` — not `C:\Tools\Blender\4.3`.
 
 ```sh
-vmanager archive create ~/photos                 # writes ./photos.7z
-vmanager archive create ~/photos -o /backup/photos.7z
-vmanager archive create ~/code -x .git -x target # skip by name, repeatable
-vmanager archive create ~/big --level 9          # 0 fastest … 9 smallest
-vmanager archive create ~/big --threads 8        # faster, marginally larger
+vmanager folder add C:\Tools\Blender          # keep_versions applies (2)
+vmanager folder add C:\Tools\Godot --keep 3   # …unless overridden per folder
+vmanager folder remove C:\Tools\Godot
 ```
 
-Archives use LZMA2 in solid mode — the same defaults as 7-Zip itself — and are
-readable by any 7-Zip, p7zip or Windows Explorer plugin. Entry names keep the
-top-level folder (`photos/…`), matching `7z a photos.7z photos`.
+### What you have
 
-Details worth knowing:
-
-- Symlinks are skipped rather than followed, so an archive can never loop or
-  silently inline a link's target.
-- Empty directories are not stored.
-- A partially written archive is deleted if compression fails, so a `.7z` on
-  disk is always complete.
-- The destination may not sit inside the folder being archived.
-- `--force` is required to overwrite an existing archive.
-
-Every successful run is recorded in the database (`--no-record` opts out). If
-the database write fails the archive still succeeds — a warning is logged
-instead, since the file on disk is the thing that matters.
+`vmanager list` shows every version of every registered folder, oldest first,
+whether it is still unpacked or has already been swept into a `.7z`:
 
 ```
-$ vmanager archive list
- 1  2026-08-04T11:35:41Z      4 files  294.2 KiB  /backup/photos.7z
+$ vmanager list
+C:\Tools\Blender  keep 2, 2 unpacked, 2 archived
+  4.1   archived  412.4 MiB  from 1.9 GiB in 842 file(s)
+  4.2   archived  430.1 MiB  from 2.0 GiB in 851 file(s)
+  4.3   unpacked
+  4.10  unpacked
+C:\Tools\Godot  keep 3, 3 unpacked, 0 archived
+  3.5   unpacked
+  4.0   unpacked
+  4.1   unpacked
 ```
+
+The size on the left is the archive as it sits on disk; `from …` is what it
+held before compression, which is what restoring it would cost you. That part
+comes from the database — an archive with no record still appears, just marked
+`(not in the database)`, because the file is what matters.
+
+```sh
+vmanager list --archived              # only the compressed versions
+vmanager list --unpacked              # only the ones still taking up room
+vmanager list --folder C:\Tools\Godot # one folder; repeatable
+```
+
+The `unpacked`/`archived` counts in the header describe the folder itself, so
+they stay put when a filter narrows the lines below them.
+
+### The sweep
+
+`vmanager run` visits each registered folder, keeps the newest few versions
+unpacked and compresses the rest:
+
+```
+$ vmanager run
+C:\Tools\Blender  4 version(s), keeping 2
+  archived 4.1 -> 4.1.7z  842 files, 1.9 GiB -> 412.4 MiB, freed 1.5 GiB
+  archived 4.2 -> 4.2.7z  851 files, 2.0 GiB -> 430.1 MiB, freed 1.6 GiB
+C:\Tools\Godot  3 version(s), keeping 3
+  nothing to archive
+
+2 archived, 0 skipped, 0 failed, 3.1 GiB freed
+```
+
+Each archive is written *next to* the folder it replaces, so `4.1\` becomes
+`4.1.7z` in the same place. Restoring is a normal 7-Zip extract — the folder
+name is stored inside the archive, so it comes back as `4.1\`.
+
+Useful flags:
+
+```sh
+vmanager run --dry-run              # report only; nothing is written or deleted
+vmanager run --keep 3               # override the keep count for this run
+vmanager run --folder C:\Tools\Godot  # only this folder; repeatable
+vmanager run --keep-source          # write the archives but keep the folders
+vmanager run --force                # replace an archive that already exists
+vmanager run --level 9 --threads 8  # compression settings for this run
+```
+
+`--folder` also accepts a folder that was never registered, which is a good way
+to try the sweep on something before committing to it.
+
+### Which version is "oldest"
+
+Ordering is by the numbers in the folder name. Every run of digits is one
+component, compared numerically, so `4.9` is older than `4.10` — the answer a
+string sort gets wrong. `v4.2`, `4_2`, `Blender-4.2` and `2026-08-04` all
+parse.
+
+A folder whose name contains no digits at all is *not* a version: `current\`
+and `.cache\` are neither counted nor archived. The exception is a registered
+folder where nothing is numbered — there vManager falls back to modification
+time and treats every subfolder as a version, so tools versioned by
+date-of-copy still work.
+
+Symlinks and junctions are skipped, files are ignored, and the `.7z` files from
+previous runs are not mistaken for versions — so a daily sweep settles instead
+of eating one version per day.
+
+### What protects the old versions
+
+The delete is what frees the disk, so it happens last and only after the
+archive has been proven good:
+
+1. the archive is written to a fresh `.7z`, and deleted again if compression
+   fails — a `.7z` on disk is never half-written;
+2. it is read back and its file count compared against what was walked;
+3. only then is the version folder removed.
+
+A failure at any earlier point leaves the version folder exactly where it was.
+If an archive of that name already exists, that version is skipped with a
+message rather than overwritten, and nothing is deleted — pass `--force` when
+you do want it replaced. Use `--keep-source` for a first run if you would
+rather inspect the archives before trusting the deletion.
+
+One folder failing does not stop the others: an unplugged drive is reported,
+the remaining folders are still swept, and the run ends with a non-zero exit
+code so a failed scheduled run is visible in Task Scheduler's history.
+
+## Scheduling the daily run
+
+vManager has no resident daemon. `schedule install` hands `vmanager run` to
+Windows Task Scheduler, which already knows how to run something daily, survive
+reboots and record the outcome.
+
+```sh
+vmanager schedule install                 # daily at 03:00
+vmanager schedule install --at 21:30      # …or whenever suits
+vmanager schedule install --force         # replace an existing task
+vmanager schedule status
+vmanager schedule uninstall
+```
+
+The task is named `vManager daily sweep` (`--name` changes it) and runs the
+executable at its current path, so move the binary and you will want to install
+it again. An explicit `--config` is carried into the task.
+
+On non-Windows platforms these commands report that Task Scheduler is not
+available; run `vmanager run` from cron or a systemd timer instead.
 
 ## Database
 
-A single SQLite file, by default `vmanager.db` inside the data directory
-(`vmanager db path` prints it). SQLite is linked statically via `rusqlite`'s
-bundled build, so there is no system package to install and no version skew
-between machines.
+A single SQLite file, by default `vmanager.db` inside the platform data
+directory (set `data_dir` or `database` to move it). It is created and migrated
+automatically on first use — there is nothing to initialize. SQLite is linked
+statically via `rusqlite`'s bundled build, so there is no system package to
+install and no version skew between machines.
 
 The schema is versioned with SQLite's own `user_version` pragma and migrated on
 open: each entry in `MIGRATIONS` (`src/db.rs`) runs inside a transaction, so an
@@ -122,10 +246,21 @@ has shipped.
 Connections open with WAL journaling, `foreign_keys = ON` and a 5 second busy
 timeout, so a second `vmanager` waits its turn instead of failing.
 
+Two tables: `folders` is the registry `vmanager run` walks, and `archives`
+records every `.7z` written, pointing back at the folder it came from. The
+archive records are what let `vmanager list` report a version's original size
+— the one thing a `.7z` cannot tell you by looking at it.
+Unregistering a folder clears that back-reference (`ON DELETE SET NULL`) rather
+than discarding the archive records — the files are still on disk, so their
+history should not vanish with the registration.
+
+The database is a record, not the source of truth: the archives and version
+folders on disk are. Deleting the database loses the history, not the versions.
+
 ## Configuration
 
-`vmanager config init` writes a commented starter file to the platform
-configuration directory:
+Configuration is optional — every key has a default. To change one, write a
+`config.toml` by hand in the platform configuration directory:
 
 | Platform | Path |
 | --- | --- |
@@ -133,18 +268,28 @@ configuration directory:
 | macOS | `~/Library/Application Support/vmanager/config.toml` |
 | Windows | `%APPDATA%\vmanager\config.toml` |
 
+```toml
+keep_versions = 3
+compression_level = 9
+```
+
 Values are layered, lowest precedence first: built-in defaults, then the
 configuration file, then environment variables, then command line flags. A
 missing file is fine — the defaults apply — but an unreadable or malformed one
 is an error. Unknown keys are rejected so typos surface immediately.
 
-## Shell completions
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `data_dir` | platform data directory | Where vManager keeps its data |
+| `database` | `vmanager.db` in `data_dir` | SQLite database file |
+| `keep_versions` | `2` | Versions left unpacked per folder |
+| `compression_level` | `6` | LZMA2 level used by `run`, 0–9 |
+| `compression_threads` | `1` | Compression threads used by `run` |
 
-```sh
-vmanager completions bash > /etc/bash_completion.d/vmanager
-vmanager completions zsh  > ~/.zfunc/_vmanager
-vmanager completions fish > ~/.config/fish/completions/vmanager.fish
-```
+The keep count is resolved per folder, highest precedence first: `run --keep`,
+then the folder's own `--keep` from `folder add`, then `keep_versions`. A
+`keep_versions` of `0` is rejected rather than obeyed — it would archive every
+copy of a tool, which is never what the key is meant to say.
 
 ## Layout
 
@@ -153,6 +298,8 @@ src/
   main.rs             process entry point: parse, run, map errors to exit codes
   lib.rs              library crate; dispatches a parsed command
   cli.rs              clap definitions: global flags and the subcommand list
+  version.rs          finding version folders and ordering them oldest first
+  sweep.rs            the keep-newest-N policy: plan, archive, verify, delete
   archive.rs          7z creation: walking, filtering, compression
   db.rs               SQLite connection, migrations and queries
   config.rs           config file discovery, parsing and defaults
@@ -160,13 +307,18 @@ src/
   logging.rs          tracing subscriber setup (stderr)
   commands/
     mod.rs            shared Context handed to every subcommand
-    archive.rs        `vmanager archive`
-    db.rs             `vmanager db`
-    config.rs         `vmanager config`
-    completions.rs    `vmanager completions`
+    run.rs            `vmanager run`
+    list.rs           `vmanager list`
+    folder.rs         `vmanager folder`
+    schedule.rs       `vmanager schedule`
 tests/
   cli.rs              end-to-end tests that run the built binary
 ```
+
+`version.rs` and `sweep.rs` hold the policy and are filesystem-only: no
+database, no printing, no clap. That is what lets the ordering rules and the
+archive-then-delete sequence be tested directly, and it keeps `commands/run.rs`
+down to gathering settings, looping and reporting.
 
 `main.rs` is deliberately thin: the logic lives in the library so tests and any
 future front-end can drive it without a process boundary.
@@ -190,6 +342,12 @@ cargo clippy --all-targets
 cargo fmt --check
 cargo deny check        # licenses, advisories, sources (needs cargo-deny)
 ```
+
+CI checks formatting, runs clippy over all targets and builds the release
+binary on Windows; it also checks dependency licences and advisories. It does
+**not** run the test suite — `cargo test` is a local step. Because clippy uses
+`--all-targets` the tests are still compiled and type-checked on every push, so
+they cannot silently rot; they just are not executed.
 
 ## Licensing of dependencies
 

@@ -5,8 +5,8 @@
 //! produces by default.
 //!
 //! Entry names are relative to the *parent* of the source folder, so
-//! `vmanager archive create photos` yields an archive containing
-//! `photos/…` — the same layout as `7z a photos.7z photos`.
+//! archiving `Blender\4.1` yields an archive containing `4.1/…` — the same
+//! layout as `7z a 4.1.7z 4.1`, so a version restores under its own name.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -66,15 +66,6 @@ pub struct Summary {
     pub source_bytes: u64,
     /// Size of the archive on disk.
     pub archive_bytes: u64,
-}
-
-impl Summary {
-    /// Compressed size as a percentage of the original, or `None` when the
-    /// source was empty and the ratio would divide by zero.
-    pub fn ratio(&self) -> Option<f64> {
-        (self.source_bytes > 0)
-            .then(|| self.archive_bytes as f64 / self.source_bytes as f64 * 100.0)
-    }
 }
 
 /// Archive `source` into `dest`.
@@ -143,22 +134,6 @@ pub fn create(source: &Path, dest: &Path, options: &Options) -> Result<Summary> 
         source_bytes,
         archive_bytes,
     })
-}
-
-/// Where an archive for `source` lands when `--output` is not given:
-/// `<folder-name>.7z` in the current directory.
-pub fn default_output_path(source: &Path) -> Result<PathBuf> {
-    let source = canonical_dir(source)?;
-    let name = source.file_name().ok_or_else(|| {
-        Error::Archive(format!(
-            "`{}` has no name to derive an archive name from; pass --output",
-            source.display()
-        ))
-    })?;
-
-    let mut file_name = name.to_os_string();
-    file_name.push(format!(".{EXTENSION}"));
-    Ok(PathBuf::from(file_name))
 }
 
 /// Render a byte count for humans: `1.2 MiB`.
@@ -265,7 +240,11 @@ fn is_excluded(path: &Path, root: &Path, exclude: &[String]) -> bool {
 }
 
 /// Resolve `path` and confirm it is a directory we can archive.
-fn canonical_dir(path: &Path) -> Result<PathBuf> {
+///
+/// Also the way a folder is spelled before it goes into the database, so that
+/// `.\Tools\Blender` and `C:\Tools\Blender` are recognised as the same
+/// registration.
+pub fn canonical_dir(path: &Path) -> Result<PathBuf> {
     let canonical = path.canonicalize().map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             Error::NotFound {
@@ -391,7 +370,6 @@ mod tests {
             summary.archive_bytes,
             std::fs::metadata(&dest).unwrap().len()
         );
-        assert!(summary.ratio().is_some());
     }
 
     #[test]
@@ -541,15 +519,6 @@ mod tests {
 
         let err = create(&source, &dir.path().join("x.7z"), &Options::default()).unwrap_err();
         assert!(err.to_string().contains("no files"), "{err}");
-    }
-
-    #[test]
-    fn default_output_is_the_folder_name() {
-        let dir = fixture();
-        assert_eq!(
-            default_output_path(&dir.path().join("photos")).unwrap(),
-            PathBuf::from("photos.7z")
-        );
     }
 
     #[test]
