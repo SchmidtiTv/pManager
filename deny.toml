@@ -1,0 +1,45 @@
+# cargo-deny configuration — https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally with:
+#   cargo install cargo-deny && cargo deny check
+#
+# The licenses section is the important one: it fails the build if a dependency
+# (or a new version of one) arrives under a license that is not on this list,
+# so a copyleft crate can never slip into the tree unnoticed.
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+
+# vmanager itself carries no `license` field (it is `publish = false`), and
+# picking one is the repository owner's decision, not a dependency question.
+# Skip unpublished workspace crates so the check stays about third-party code.
+# Once a project license is chosen, set `license` in Cargo.toml; this can then
+# go away.
+private = { ignore = true }
+
+# Exactly the licenses present in the tree today — all permissive, all fine for
+# commercial and closed-source distribution as long as notices are kept.
+# Deliberately not padded with licenses we do not use: a new dependency under
+# anything else should fail here and get a deliberate decision, not sail
+# through on a pre-approved list.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "MPL-2.0",     # file-level copyleft (option-ext); only binds if we modify that crate
+    "Unicode-3.0", # unicode-ident, alongside MIT/Apache-2.0
+    "Zlib",        # foldhash
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

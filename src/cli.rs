@@ -1,0 +1,188 @@
+//! Command line surface: the parser, the global flags and the subcommand list.
+//!
+//! Everything a user can type is declared here; the actual work lives in
+//! [`crate::commands`]. Adding a subcommand means adding a variant to
+//! [`Command`] and a module under `commands/`.
+
+use std::io::IsTerminal;
+use std::path::PathBuf;
+
+use clap::{Parser, Subcommand, ValueEnum};
+
+/// Long help text shown by `vmanager --help`.
+const AFTER_HELP: &str = "\
+Environment:
+  VMANAGER_CONFIG   Path to the config file (overridden by --config)
+  NO_COLOR          Disable colored output
+  RUST_LOG          Fine-grained log filter, e.g. `vmanager=debug`
+
+Exit codes:
+  0  success               3  configuration error    6  archive error
+  1  failure               4  not found            130  interrupted
+  2  invalid arguments     5  database error";
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "vmanager",
+    version,
+    about = "vManager command line interface",
+    propagate_version = true,
+    after_help = AFTER_HELP,
+    // Print help instead of a bare usage error when invoked with no arguments.
+    arg_required_else_help = true
+)]
+pub struct Cli {
+    #[command(flatten)]
+    pub globals: GlobalArgs,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+/// Flags accepted by every subcommand.
+#[derive(Debug, clap::Args)]
+pub struct GlobalArgs {
+    /// Increase logging verbosity (repeat for more: -v, -vv, -vvv)
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Silence all output except errors
+    #[arg(short, long, global = true, conflicts_with = "verbose")]
+    pub quiet: bool,
+
+    /// Path to the configuration file
+    #[arg(
+        short,
+        long,
+        global = true,
+        value_name = "FILE",
+        env = "VMANAGER_CONFIG"
+    )]
+    pub config: Option<PathBuf>,
+
+    /// When to use colored output
+    #[arg(long, global = true, value_name = "WHEN", default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
+}
+
+impl GlobalArgs {
+    /// Log level implied by `--verbose` / `--quiet`.
+    pub fn log_level(&self) -> tracing::Level {
+        if self.quiet {
+            return tracing::Level::ERROR;
+        }
+        match self.verbose {
+            0 => tracing::Level::WARN,
+            1 => tracing::Level::INFO,
+            2 => tracing::Level::DEBUG,
+            _ => tracing::Level::TRACE,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum ColorChoice {
+    /// Colorize when stderr is a terminal
+    Auto,
+    /// Always colorize
+    Always,
+    /// Never colorize
+    Never,
+}
+
+impl ColorChoice {
+    /// Resolve the choice against the environment and the actual stream.
+    ///
+    /// `NO_COLOR` wins over `auto` but not over an explicit `--color always`,
+    /// which matches the convention at <https://no-color.org>.
+    pub fn should_colorize(self) -> bool {
+        match self {
+            ColorChoice::Always => true,
+            ColorChoice::Never => false,
+            ColorChoice::Auto => {
+                std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ColorChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            ColorChoice::Auto => "auto",
+            ColorChoice::Always => "always",
+            ColorChoice::Never => "never",
+        };
+        f.write_str(name)
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Create and track .7z archives
+    Archive(crate::commands::archive::Args),
+
+    /// Inspect the SQLite database
+    Db(crate::commands::db::Args),
+
+    /// Inspect and create the configuration file
+    Config(crate::commands::config::Args),
+
+    /// Generate a shell completion script
+    Completions(crate::commands::completions::Args),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        // Catches conflicting flags, duplicate short options and bad defaults.
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn verbosity_maps_to_log_levels() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(args)
+                .expect("valid arguments")
+                .globals
+                .log_level()
+        };
+
+        assert_eq!(parse(&["vmanager", "config", "path"]), tracing::Level::WARN);
+        assert_eq!(
+            parse(&["vmanager", "-v", "config", "path"]),
+            tracing::Level::INFO
+        );
+        assert_eq!(
+            parse(&["vmanager", "-vvv", "config", "path"]),
+            tracing::Level::TRACE
+        );
+        assert_eq!(
+            parse(&["vmanager", "--quiet", "config", "path"]),
+            tracing::Level::ERROR
+        );
+    }
+
+    #[test]
+    fn verbose_and_quiet_conflict() {
+        assert!(Cli::try_parse_from(["vmanager", "-v", "-q", "config", "path"]).is_err());
+    }
+
+    #[test]
+    fn globals_are_accepted_after_the_subcommand() {
+        let cli = Cli::try_parse_from(["vmanager", "config", "path", "--color", "never"])
+            .expect("globals should propagate to subcommands");
+        assert_eq!(cli.globals.color, ColorChoice::Never);
+    }
+
+    #[test]
+    fn explicit_color_choice_ignores_terminal_detection() {
+        assert!(ColorChoice::Always.should_colorize());
+        assert!(!ColorChoice::Never.should_colorize());
+    }
+}
