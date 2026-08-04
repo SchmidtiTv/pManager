@@ -9,7 +9,7 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # Windows is the only platform vManager targets, so it is the only platform
+  # Windows is the only platform pManager targets, so it is the only platform
   # anything is compiled on.
   #
   # The suite is not run here — run it locally with `cargo test`. Clippy still
@@ -36,7 +36,7 @@ jobs:
       - name: Smoke test the release binary
         run: cargo run --release -- --version
 
-  # Reads Cargo metadata only — it never builds or runs vManager, so the
+  # Reads Cargo metadata only — it never builds or runs pManager, so the
   # runner OS is irrelevant and the cheapest one is fine.
   deny:
     name: Licenses and advisories

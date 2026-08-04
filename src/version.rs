@@ -3,7 +3,7 @@
 //!
 //! A registered folder is the parent of one tool's versions — `Tools\Blender`
 //! containing `4.1`, `4.2`, `4.3`. Each direct child *directory* is a
-//! candidate version; files (including the `.7z` archives vManager itself
+//! candidate version; files (including the `.7z` archives pManager itself
 //! writes) and symlinks are not.
 //!
 //! Ordering is by the numbers in the folder name: every run of digits becomes

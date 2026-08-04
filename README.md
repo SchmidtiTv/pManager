@@ -1,8 +1,8 @@
-# vManager
+# pManager
 
 Keeps the disk from filling up with old versions of your tools.
 
-Point vManager at a folder that holds one subfolder per version, and once a day
+Point pManager at a folder that holds one subfolder per version, and once a day
 it compresses everything except the newest few into `.7z` archives and deletes
 the folders it compressed. The old versions stay recoverable; the space they
 were using does not.
@@ -21,7 +21,7 @@ and every archive it has made.
 ## Building
 
 ```sh
-cargo build --release        # binary at target/release/vmanager
+cargo build --release        # binary at target/release/pmanager
 cargo run -- --help          # run it straight from the source tree
 cargo install --path .       # install into ~/.cargo/bin
 ```
@@ -33,18 +33,18 @@ compression is pure Rust.
 ## Getting started
 
 ```sh
-vmanager folder add C:\Tools\Blender     # watch this tool's versions
-vmanager folder add C:\Tools\Godot --keep 3
-vmanager list                            # see what you have
-vmanager run --dry-run                   # see what would be archived
-vmanager run                             # do it
-vmanager schedule install                # …and every day at 03:00
+pmanager folder add C:\Tools\Blender     # watch this tool's versions
+pmanager folder add C:\Tools\Godot --keep 3
+pmanager list                            # see what you have
+pmanager run --dry-run                   # see what would be archived
+pmanager run                             # do it
+pmanager schedule install                # …and every day at 03:00
 ```
 
 ## Usage
 
 ```
-vmanager [OPTIONS] <COMMAND>
+pmanager [OPTIONS] <COMMAND>
 ```
 
 ### Commands
@@ -75,9 +75,9 @@ These are accepted before or after the subcommand.
 
 | Variable | Effect |
 | --- | --- |
-| `VMANAGER_CONFIG` | Path to the configuration file (`--config` wins) |
+| `PMANAGER_CONFIG` | Path to the configuration file (`--config` wins) |
 | `NO_COLOR` | Disables color when `--color` is left at `auto` |
-| `RUST_LOG` | Fine-grained log filter, e.g. `vmanager=debug`; overrides `-v` |
+| `RUST_LOG` | Fine-grained log filter, e.g. `pmanager=debug`; overrides `-v` |
 
 ### Exit codes
 
@@ -99,18 +99,18 @@ itself. Register `C:\Tools\Blender`, the folder that contains `4.1`, `4.2` and
 `4.3` — not `C:\Tools\Blender\4.3`.
 
 ```sh
-vmanager folder add C:\Tools\Blender          # keep_versions applies (2)
-vmanager folder add C:\Tools\Godot --keep 3   # …unless overridden per folder
-vmanager folder remove C:\Tools\Godot
+pmanager folder add C:\Tools\Blender          # keep_versions applies (2)
+pmanager folder add C:\Tools\Godot --keep 3   # …unless overridden per folder
+pmanager folder remove C:\Tools\Godot
 ```
 
 ### What you have
 
-`vmanager list` shows every version of every registered folder, oldest first,
+`pmanager list` shows every version of every registered folder, oldest first,
 whether it is still unpacked or has already been swept into a `.7z`:
 
 ```
-$ vmanager list
+$ pmanager list
 C:\Tools\Blender  keep 2, 2 unpacked, 2 archived
   4.1   archived  412.4 MiB  from 1.9 GiB in 842 file(s)
   4.2   archived  430.1 MiB  from 2.0 GiB in 851 file(s)
@@ -128,9 +128,9 @@ comes from the database — an archive with no record still appears, just marked
 `(not in the database)`, because the file is what matters.
 
 ```sh
-vmanager list --archived              # only the compressed versions
-vmanager list --unpacked              # only the ones still taking up room
-vmanager list --folder C:\Tools\Godot # one folder; repeatable
+pmanager list --archived              # only the compressed versions
+pmanager list --unpacked              # only the ones still taking up room
+pmanager list --folder C:\Tools\Godot # one folder; repeatable
 ```
 
 The `unpacked`/`archived` counts in the header describe the folder itself, so
@@ -138,11 +138,11 @@ they stay put when a filter narrows the lines below them.
 
 ### The sweep
 
-`vmanager run` visits each registered folder, keeps the newest few versions
+`pmanager run` visits each registered folder, keeps the newest few versions
 unpacked and compresses the rest:
 
 ```
-$ vmanager run
+$ pmanager run
 C:\Tools\Blender  4 version(s), keeping 2
   archived 4.1 -> 4.1.7z  842 files, 1.9 GiB -> 412.4 MiB, freed 1.5 GiB
   archived 4.2 -> 4.2.7z  851 files, 2.0 GiB -> 430.1 MiB, freed 1.6 GiB
@@ -159,12 +159,12 @@ name is stored inside the archive, so it comes back as `4.1\`.
 Useful flags:
 
 ```sh
-vmanager run --dry-run              # report only; nothing is written or deleted
-vmanager run --keep 3               # override the keep count for this run
-vmanager run --folder C:\Tools\Godot  # only this folder; repeatable
-vmanager run --keep-source          # write the archives but keep the folders
-vmanager run --force                # replace an archive that already exists
-vmanager run --level 9 --threads 8  # compression settings for this run
+pmanager run --dry-run              # report only; nothing is written or deleted
+pmanager run --keep 3               # override the keep count for this run
+pmanager run --folder C:\Tools\Godot  # only this folder; repeatable
+pmanager run --keep-source          # write the archives but keep the folders
+pmanager run --force                # replace an archive that already exists
+pmanager run --level 9 --threads 8  # compression settings for this run
 ```
 
 `--folder` also accepts a folder that was never registered, which is a good way
@@ -179,7 +179,7 @@ parse.
 
 A folder whose name contains no digits at all is *not* a version: `current\`
 and `.cache\` are neither counted nor archived. The exception is a registered
-folder where nothing is numbered — there vManager falls back to modification
+folder where nothing is numbered — there pManager falls back to modification
 time and treats every subfolder as a version, so tools versioned by
 date-of-copy still work.
 
@@ -209,28 +209,28 @@ code so a failed scheduled run is visible in Task Scheduler's history.
 
 ## Scheduling the daily run
 
-vManager has no resident daemon. `schedule install` hands `vmanager run` to
+pManager has no resident daemon. `schedule install` hands `pmanager run` to
 Windows Task Scheduler, which already knows how to run something daily, survive
 reboots and record the outcome.
 
 ```sh
-vmanager schedule install                 # daily at 03:00
-vmanager schedule install --at 21:30      # …or whenever suits
-vmanager schedule install --force         # replace an existing task
-vmanager schedule status
-vmanager schedule uninstall
+pmanager schedule install                 # daily at 03:00
+pmanager schedule install --at 21:30      # …or whenever suits
+pmanager schedule install --force         # replace an existing task
+pmanager schedule status
+pmanager schedule uninstall
 ```
 
-The task is named `vManager daily sweep` (`--name` changes it) and runs the
+The task is named `pManager daily sweep` (`--name` changes it) and runs the
 executable at its current path, so move the binary and you will want to install
 it again. An explicit `--config` is carried into the task.
 
 On non-Windows platforms these commands report that Task Scheduler is not
-available; run `vmanager run` from cron or a systemd timer instead.
+available; run `pmanager run` from cron or a systemd timer instead.
 
 ## Database
 
-A single SQLite file, by default `vmanager.db` inside the platform data
+A single SQLite file, by default `pmanager.db` inside the platform data
 directory (set `data_dir` or `database` to move it). It is created and migrated
 automatically on first use — there is nothing to initialize. SQLite is linked
 statically via `rusqlite`'s bundled build, so there is no system package to
@@ -239,16 +239,16 @@ install and no version skew between machines.
 The schema is versioned with SQLite's own `user_version` pragma and migrated on
 open: each entry in `MIGRATIONS` (`src/db.rs`) runs inside a transaction, so an
 interrupted upgrade leaves the database on its previous version rather than
-half-migrated. A database written by a *newer* vmanager is refused rather than
+half-migrated. A database written by a *newer* pmanager is refused rather than
 downgraded. To add a table or column, append a migration — never edit one that
 has shipped.
 
 Connections open with WAL journaling, `foreign_keys = ON` and a 5 second busy
-timeout, so a second `vmanager` waits its turn instead of failing.
+timeout, so a second `pmanager` waits its turn instead of failing.
 
-Two tables: `folders` is the registry `vmanager run` walks, and `archives`
+Two tables: `folders` is the registry `pmanager run` walks, and `archives`
 records every `.7z` written, pointing back at the folder it came from. The
-archive records are what let `vmanager list` report a version's original size
+archive records are what let `pmanager list` report a version's original size
 — the one thing a `.7z` cannot tell you by looking at it.
 Unregistering a folder clears that back-reference (`ON DELETE SET NULL`) rather
 than discarding the archive records — the files are still on disk, so their
@@ -264,9 +264,9 @@ Configuration is optional — every key has a default. To change one, write a
 
 | Platform | Path |
 | --- | --- |
-| Linux | `~/.config/vmanager/config.toml` |
-| macOS | `~/Library/Application Support/vmanager/config.toml` |
-| Windows | `%APPDATA%\vmanager\config.toml` |
+| Linux | `~/.config/pmanager/config.toml` |
+| macOS | `~/Library/Application Support/pmanager/config.toml` |
+| Windows | `%APPDATA%\pmanager\config.toml` |
 
 ```toml
 keep_versions = 3
@@ -280,8 +280,8 @@ is an error. Unknown keys are rejected so typos surface immediately.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `data_dir` | platform data directory | Where vManager keeps its data |
-| `database` | `vmanager.db` in `data_dir` | SQLite database file |
+| `data_dir` | platform data directory | Where pManager keeps its data |
+| `database` | `pmanager.db` in `data_dir` | SQLite database file |
 | `keep_versions` | `2` | Versions left unpacked per folder |
 | `compression_level` | `6` | LZMA2 level used by `run`, 0–9 |
 | `compression_threads` | `1` | Compression threads used by `run` |
@@ -307,10 +307,10 @@ src/
   logging.rs          tracing subscriber setup (stderr)
   commands/
     mod.rs            shared Context handed to every subcommand
-    run.rs            `vmanager run`
-    list.rs           `vmanager list`
-    folder.rs         `vmanager folder`
-    schedule.rs       `vmanager schedule`
+    run.rs            `pmanager run`
+    list.rs           `pmanager list`
+    folder.rs         `pmanager folder`
+    schedule.rs       `pmanager schedule`
 tests/
   cli.rs              end-to-end tests that run the built binary
 ```
@@ -376,7 +376,7 @@ slipping in unnoticed. The list holds only the licenses actually in use, so a
 new one is a deliberate decision rather than something pre-approved. Dropping
 MPL-2.0 from it means replacing `directories`.
 
-vManager itself has no license declared yet — that is a call for the repository
+pManager itself has no license declared yet — that is a call for the repository
 owner. Until one is chosen the crate is marked `publish = false` and cargo-deny
 skips it (`private.ignore`); setting `license` in `Cargo.toml` afterwards lets
 that setting go away.

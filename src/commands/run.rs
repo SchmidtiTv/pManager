@@ -1,4 +1,4 @@
-//! `vmanager run` — the daily sweep over every registered folder.
+//! `pmanager run` — the daily sweep over every registered folder.
 //!
 //! One folder failing does not stop the others: a disconnected drive should
 //! not leave the rest of the tools ungroomed. Failures are collected, reported
@@ -83,7 +83,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
         if !ctx.is_quiet() {
             let mut out = std::io::stdout().lock();
             writeln!(out, "no folders registered yet")?;
-            writeln!(out, "register one with `vmanager folder add <FOLDER>`")?;
+            writeln!(out, "register one with `pmanager folder add <FOLDER>`")?;
         }
         return Ok(());
     }

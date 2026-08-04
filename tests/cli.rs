@@ -2,15 +2,15 @@
 //!
 //! Every test that touches configuration passes an explicit `--config` inside a
 //! temporary directory, so the suite never reads or writes the real
-//! `~/.config/vmanager`.
+//! `~/.config/pmanager`.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-/// A `vmanager` invocation with a clean environment.
-fn vmanager() -> Command {
-    let mut cmd = Command::cargo_bin("vmanager").expect("binary is built");
-    cmd.env_remove("VMANAGER_CONFIG")
+/// A `pmanager` invocation with a clean environment.
+fn pmanager() -> Command {
+    let mut cmd = Command::cargo_bin("pmanager").expect("binary is built");
+    cmd.env_remove("PMANAGER_CONFIG")
         .env_remove("RUST_LOG")
         .env("NO_COLOR", "1");
     cmd
@@ -18,7 +18,7 @@ fn vmanager() -> Command {
 
 #[test]
 fn prints_version() {
-    vmanager()
+    pmanager()
         .arg("--version")
         .assert()
         .success()
@@ -27,7 +27,7 @@ fn prints_version() {
 
 #[test]
 fn prints_help_with_exit_code_zero() {
-    vmanager()
+    pmanager()
         .arg("--help")
         .assert()
         .success()
@@ -37,7 +37,7 @@ fn prints_help_with_exit_code_zero() {
 
 #[test]
 fn bare_invocation_shows_help() {
-    vmanager()
+    pmanager()
         .assert()
         .code(2)
         .stderr(predicate::str::contains("Usage:"));
@@ -45,12 +45,12 @@ fn bare_invocation_shows_help() {
 
 #[test]
 fn unknown_flag_is_a_usage_error() {
-    vmanager().arg("--definitely-not-a-flag").assert().code(2);
+    pmanager().arg("--definitely-not-a-flag").assert().code(2);
 }
 
 #[test]
 fn unknown_subcommand_is_a_usage_error() {
-    vmanager().arg("frobnicate").assert().code(2);
+    pmanager().arg("frobnicate").assert().code(2);
 }
 
 #[test]
@@ -59,10 +59,10 @@ fn the_config_environment_variable_is_honoured() {
     let path = dir.path().join("from-env.toml");
     std::fs::write(&path, "keep_versions = 0\n").unwrap();
 
-    // A file only VMANAGER_CONFIG points at still has to be read: the sweep
+    // A file only PMANAGER_CONFIG points at still has to be read: the sweep
     // rejects the bad value rather than running with the default.
-    vmanager()
-        .env("VMANAGER_CONFIG", &path)
+    pmanager()
+        .env("PMANAGER_CONFIG", &path)
         .arg("run")
         .assert()
         .failure()
@@ -74,7 +74,7 @@ fn quiet_suppresses_progress_output() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0"]);
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .args(["--quiet", "--config"])
@@ -90,7 +90,7 @@ fn invalid_config_exits_with_the_config_code() {
     let path = dir.path().join("config.toml");
     std::fs::write(&path, "this is not = = toml\n").unwrap();
 
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&path)
         .assert()
@@ -106,7 +106,7 @@ fn an_unknown_config_key_is_rejected() {
     std::fs::write(&path, "keep_verisons = 3\n").unwrap();
 
     // Typos in a hand-written file must surface rather than be ignored.
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&path)
         .assert()
@@ -119,7 +119,7 @@ fn logs_go_to_stderr_not_stdout() {
     let path = dir.path().join("config.toml");
 
     // `-vv` enables debug logging, which reports the missing config file.
-    vmanager()
+    pmanager()
         .args(["list", "-vv", "--config"])
         .arg(&path)
         .assert()
@@ -161,7 +161,7 @@ fn registering_a_folder_and_sweeping_it_archives_the_oldest_versions() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["4.1", "4.2", "4.3", "4.10"]);
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .arg("--config")
@@ -171,7 +171,7 @@ fn registering_a_folder_and_sweeping_it_archives_the_oldest_versions() {
         .stdout(predicate::str::contains("registered"))
         .stdout(predicate::str::contains("4 version(s) present"));
 
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&config)
         .assert()
@@ -189,7 +189,7 @@ fn registering_a_folder_and_sweeping_it_archives_the_oldest_versions() {
     assert!(tool.join("4.3").is_dir());
     assert!(tool.join("4.10").is_dir());
 
-    vmanager()
+    pmanager()
         .args(["list", "--config"])
         .arg(&config)
         .assert()
@@ -203,7 +203,7 @@ fn a_second_sweep_has_nothing_left_to_do() {
     let tool = tool_folder(dir.path(), "godot", &["1.0", "2.0", "3.0"]);
 
     let sweep = || {
-        let mut cmd = vmanager();
+        let mut cmd = pmanager();
         cmd.args(["folder", "add"])
             .arg(&tool)
             .arg("--config")
@@ -212,7 +212,7 @@ fn a_second_sweep_has_nothing_left_to_do() {
     };
     sweep().assert().success();
 
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&config)
         .assert()
@@ -221,7 +221,7 @@ fn a_second_sweep_has_nothing_left_to_do() {
 
     // The .7z left behind must not be mistaken for a version folder, so the
     // daily run settles instead of eating a version every day.
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&config)
         .assert()
@@ -238,7 +238,7 @@ fn a_dry_run_reports_without_touching_anything() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0", "3.0"]);
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .arg("--config")
@@ -246,7 +246,7 @@ fn a_dry_run_reports_without_touching_anything() {
         .assert()
         .success();
 
-    vmanager()
+    pmanager()
         .args(["run", "--dry-run", "--config"])
         .arg(&config)
         .assert()
@@ -263,7 +263,7 @@ fn keep_source_writes_the_archive_but_leaves_the_folder() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0", "3.0"]);
 
-    vmanager()
+    pmanager()
         .args(["run", "--keep-source", "--folder"])
         .arg(&tool)
         .arg("--config")
@@ -291,7 +291,7 @@ fn keep_is_taken_from_the_flag_then_the_folder_then_the_config() {
     .unwrap();
 
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0", "3.0", "4.0"]);
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .args(["--keep", "1", "--config"])
@@ -299,7 +299,7 @@ fn keep_is_taken_from_the_flag_then_the_folder_then_the_config() {
         .assert()
         .success();
 
-    vmanager()
+    pmanager()
         .args(["run", "--dry-run", "--config"])
         .arg(&config)
         .assert()
@@ -308,7 +308,7 @@ fn keep_is_taken_from_the_flag_then_the_folder_then_the_config() {
         .stdout(predicate::str::contains("3 version(s) would be archived"));
 
     // …and an explicit --keep beats both.
-    vmanager()
+    pmanager()
         .args(["run", "--dry-run", "--keep", "2", "--config"])
         .arg(&config)
         .assert()
@@ -321,7 +321,7 @@ fn keep_is_taken_from_the_flag_then_the_folder_then_the_config() {
 fn a_keep_of_zero_is_a_usage_error() {
     let (_dir, config) = isolated();
 
-    vmanager()
+    pmanager()
         .args(["run", "--keep", "0", "--config"])
         .arg(&config)
         .assert()
@@ -340,7 +340,7 @@ fn an_invalid_keep_versions_is_a_config_error() {
     )
     .unwrap();
 
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&config)
         .assert()
@@ -355,7 +355,7 @@ fn folders_without_version_numbers_are_left_alone() {
     std::fs::create_dir(tool.join("current")).unwrap();
     std::fs::write(tool.join("current").join("tool.exe"), "live").unwrap();
 
-    vmanager()
+    pmanager()
         .args(["run", "--folder"])
         .arg(&tool)
         .arg("--config")
@@ -374,14 +374,14 @@ fn listing_reflects_registration_and_remove_unregisters() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0", "3.0"]);
 
-    vmanager()
+    pmanager()
         .args(["list", "--config"])
         .arg(&config)
         .assert()
         .success()
         .stdout(predicate::str::contains("no folders registered yet"));
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .arg("--config")
@@ -389,14 +389,14 @@ fn listing_reflects_registration_and_remove_unregisters() {
         .assert()
         .success();
 
-    vmanager()
+    pmanager()
         .args(["list", "--config"])
         .arg(&config)
         .assert()
         .success()
         .stdout(predicate::str::contains("keep 2, 3 unpacked, 0 archived"));
 
-    vmanager()
+    pmanager()
         .args(["folder", "remove"])
         .arg(&tool)
         .arg("--config")
@@ -405,7 +405,7 @@ fn listing_reflects_registration_and_remove_unregisters() {
         .success()
         .stdout(predicate::str::contains("unregistered"));
 
-    vmanager()
+    pmanager()
         .args(["folder", "remove"])
         .arg(&tool)
         .arg("--config")
@@ -419,7 +419,7 @@ fn registering_the_same_folder_twice_updates_it() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0"]);
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .arg("--config")
@@ -428,7 +428,7 @@ fn registering_the_same_folder_twice_updates_it() {
         .success()
         .stdout(predicate::str::contains("registered"));
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .args(["--keep", "5", "--config"])
@@ -438,7 +438,7 @@ fn registering_the_same_folder_twice_updates_it() {
         .stdout(predicate::str::contains("updated"))
         .stdout(predicate::str::contains("keeping 5"));
 
-    vmanager()
+    pmanager()
         .args(["list", "--config"])
         .arg(&config)
         .assert()
@@ -450,7 +450,7 @@ fn registering_the_same_folder_twice_updates_it() {
 fn registering_a_missing_folder_is_not_found() {
     let (dir, config) = isolated();
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(dir.path().join("absent"))
         .arg("--config")
@@ -463,7 +463,7 @@ fn registering_a_missing_folder_is_not_found() {
 fn a_run_with_nothing_registered_says_so() {
     let (_dir, config) = isolated();
 
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&config)
         .assert()
@@ -479,7 +479,7 @@ fn one_broken_folder_does_not_stop_the_others() {
     std::fs::create_dir(&gone).unwrap();
 
     for folder in [&healthy, &gone] {
-        vmanager()
+        pmanager()
             .args(["folder", "add"])
             .arg(folder)
             .arg("--config")
@@ -491,7 +491,7 @@ fn one_broken_folder_does_not_stop_the_others() {
 
     // The missing folder fails the run, but only after the healthy one has
     // been swept — a disconnected drive must not strand every other tool.
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&config)
         .assert()
@@ -509,7 +509,7 @@ fn an_existing_archive_is_skipped_until_forced() {
     std::fs::write(tool.join("1.0.7z"), b"left over from something else").unwrap();
 
     let sweep = || {
-        let mut cmd = vmanager();
+        let mut cmd = pmanager();
         cmd.args(["run", "--folder"])
             .arg(&tool)
             .arg("--config")
@@ -537,7 +537,7 @@ fn sweeping_an_unregistered_folder_works_without_registering_it() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0", "3.0"]);
 
-    vmanager()
+    pmanager()
         .args(["run", "--folder"])
         .arg(&tool)
         .arg("--config")
@@ -547,7 +547,7 @@ fn sweeping_an_unregistered_folder_works_without_registering_it() {
         .stdout(predicate::str::contains("1 archived"));
 
     // Sweeping without registering leaves the registry empty…
-    vmanager()
+    pmanager()
         .args(["list", "--config"])
         .arg(&config)
         .assert()
@@ -564,7 +564,7 @@ fn the_archive_of_a_swept_version_restores_it() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0", "3.0"]);
 
-    vmanager()
+    pmanager()
         .args(["run", "--folder"])
         .arg(&tool)
         .arg("--config")
@@ -584,7 +584,7 @@ fn the_archive_of_a_swept_version_restores_it() {
 
 #[test]
 fn schedule_rejects_a_malformed_time() {
-    vmanager()
+    pmanager()
         .args(["schedule", "install", "--at", "3pm"])
         .assert()
         .code(2)
@@ -594,7 +594,7 @@ fn schedule_rejects_a_malformed_time() {
 #[cfg(not(windows))]
 #[test]
 fn scheduling_off_windows_explains_itself() {
-    vmanager()
+    pmanager()
         .args(["schedule", "install"])
         .assert()
         .failure()
@@ -606,21 +606,21 @@ fn list_shows_archived_and_unpacked_versions_oldest_first() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["4.1", "4.2", "4.3", "4.10"]);
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .arg("--config")
         .arg(&config)
         .assert()
         .success();
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&config)
         .assert()
         .success();
 
     let rendered = String::from_utf8(
-        vmanager()
+        pmanager()
             .args(["list", "--config"])
             .arg(&config)
             .assert()
@@ -657,7 +657,7 @@ fn list_can_be_narrowed_to_one_state_or_one_folder() {
     let godot = tool_folder(dir.path(), "godot", &["1.0", "2.0"]);
 
     for folder in [&blender, &godot] {
-        vmanager()
+        pmanager()
             .args(["folder", "add"])
             .arg(folder)
             .arg("--config")
@@ -665,13 +665,13 @@ fn list_can_be_narrowed_to_one_state_or_one_folder() {
             .assert()
             .success();
     }
-    vmanager()
+    pmanager()
         .args(["run", "--config"])
         .arg(&config)
         .assert()
         .success();
 
-    vmanager()
+    pmanager()
         .args(["list", "--archived", "--config"])
         .arg(&config)
         .assert()
@@ -679,14 +679,14 @@ fn list_can_be_narrowed_to_one_state_or_one_folder() {
         .stdout(predicate::str::contains("archived"))
         .stdout(predicate::str::contains("unpacked\n").not());
 
-    vmanager()
+    pmanager()
         .args(["list", "--unpacked", "--config"])
         .arg(&config)
         .assert()
         .success()
         .stdout(predicate::str::contains("archived  ").not());
 
-    vmanager()
+    pmanager()
         .args(["list", "--folder"])
         .arg(&godot)
         .arg("--config")
@@ -705,7 +705,7 @@ fn list_reports_an_archive_the_database_has_never_seen() {
     // the file exists, so it should be listed even without a record.
     std::fs::write(tool.join("1.0.7z"), b"pretend archive").unwrap();
 
-    vmanager()
+    pmanager()
         .args(["list", "--folder"])
         .arg(&tool)
         .arg("--config")
@@ -721,7 +721,7 @@ fn list_survives_a_folder_that_has_gone_missing() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0"]);
 
-    vmanager()
+    pmanager()
         .args(["folder", "add"])
         .arg(&tool)
         .arg("--config")
@@ -730,7 +730,7 @@ fn list_survives_a_folder_that_has_gone_missing() {
         .success();
     std::fs::remove_dir_all(&tool).unwrap();
 
-    vmanager()
+    pmanager()
         .args(["list", "--config"])
         .arg(&config)
         .assert()

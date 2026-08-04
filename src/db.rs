@@ -36,7 +36,7 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX archives_created_at ON archives (created_at DESC);
     "#,
-    // v2 — the registry of folders `vmanager run` sweeps, and the link from an
+    // v2 — the registry of folders `pmanager run` sweeps, and the link from an
     // archive back to the folder whose version it holds.
     r#"
     CREATE TABLE folders (
@@ -57,7 +57,7 @@ const MIGRATIONS: &[&str] = &[
 ///
 /// The size of the archive is on disk to be read; what only the database knows
 /// is what went *into* it — how large the version was before compression, and
-/// how many files it held. That is what `vmanager list` reports.
+/// how many files it held. That is what `pmanager list` reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveRecord {
     /// The folder that was compressed.
@@ -72,7 +72,7 @@ pub struct ArchiveRecord {
     pub created_at: String,
 }
 
-/// One row of the `folders` table: a folder `vmanager run` watches.
+/// One row of the `folders` table: a folder `pmanager run` watches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderRecord {
     pub id: i64,
@@ -84,7 +84,7 @@ pub struct FolderRecord {
     pub added_at: String,
 }
 
-/// An open connection to the vManager database.
+/// An open connection to the pManager database.
 #[derive(Debug)]
 pub struct Database {
     conn: Connection,
@@ -190,7 +190,7 @@ impl Database {
             .optional()?)
     }
 
-    /// Register a folder for `vmanager run` to sweep.
+    /// Register a folder for `pmanager run` to sweep.
     ///
     /// Registering a folder that is already known updates its `keep` override
     /// instead of failing; the returned flag says which happened, so the
@@ -275,7 +275,7 @@ impl Database {
         if current > MIGRATIONS.len() {
             return Err(Error::Database(format!(
                 "database `{}` has schema version {current}, but this build only knows up to {}; \
-                 upgrade vmanager",
+                 upgrade pmanager",
                 self.path.display(),
                 MIGRATIONS.len()
             )));
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn opening_twice_is_idempotent() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join("vmanager.db");
+        let path = dir.path().join("nested").join("pmanager.db");
 
         let first = Database::open(&path).unwrap();
         let id = folder_with_archive(&first, "/tools/blender", "/tools/blender/1.0.7z");
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn a_database_from_the_future_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("vmanager.db");
+        let path = dir.path().join("pmanager.db");
 
         let conn = Connection::open(&path).unwrap();
         conn.pragma_update(None, "user_version", 999_i64).unwrap();
@@ -482,6 +482,6 @@ mod tests {
 
         let err = Database::open(&path).unwrap_err();
         assert!(matches!(err, Error::Database(_)), "{err}");
-        assert!(err.to_string().contains("upgrade vmanager"), "{err}");
+        assert!(err.to_string().contains("upgrade pmanager"), "{err}");
     }
 }

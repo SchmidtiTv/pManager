@@ -1,4 +1,4 @@
-//! `vmanager folder` — the registry of folders that `vmanager run` sweeps.
+//! `pmanager folder` — the registry of folders that `pmanager run` sweeps.
 //!
 //! A registered folder is the parent of one tool's versions, not a version
 //! itself: register `C:\Tools\Blender`, which holds `4.1`, `4.2` and `4.3`.
@@ -32,7 +32,7 @@ enum FolderCommand {
 
     /// Unregister a folder; nothing on disk is touched
     Remove {
-        /// A folder shown by `vmanager list`
+        /// A folder shown by `pmanager list`
         #[arg(value_name = "FOLDER")]
         folder: PathBuf,
     },
