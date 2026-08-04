@@ -83,7 +83,7 @@ impl Summary {
 /// created as needed.
 pub fn create(source: &Path, dest: &Path, options: &Options) -> Result<Summary> {
     let source = canonical_dir(source)?;
-    let dest = absolute(dest)?;
+    let dest = normalized(dest)?;
 
     if dest.exists() && !options.overwrite {
         return Err(Error::Archive(format!(
@@ -284,7 +284,40 @@ fn canonical_dir(path: &Path) -> Result<PathBuf> {
         )));
     }
 
-    Ok(canonical)
+    Ok(simplified(canonical))
+}
+
+/// Resolve a path that need not exist yet into the same shape
+/// [`canonical_dir`] produces, so the two can be compared.
+///
+/// `canonicalize` only works on existing paths, so this canonicalizes the
+/// deepest ancestor that does exist and re-appends the rest. Without it the
+/// two sides can spell the same location differently — on Windows a canonical
+/// path is extended-length (`\\?\C:\…`) and may expand an 8.3 short name
+/// (`RUNNER~1` -> `runneradmin`), so a plain `starts_with` misses.
+fn normalized(path: &Path) -> Result<PathBuf> {
+    let absolute = absolute(path)?;
+
+    let mut trailing = Vec::new();
+    let mut candidate = absolute.as_path();
+
+    loop {
+        if let Ok(canonical) = candidate.canonicalize() {
+            let mut resolved = simplified(canonical);
+            for name in trailing.iter().rev() {
+                resolved.push(name);
+            }
+            return Ok(resolved);
+        }
+
+        let (Some(parent), Some(name)) = (candidate.parent(), candidate.file_name()) else {
+            // Nothing along the path exists; the absolute form is the best we
+            // can do (and is what the comparison will see on both sides).
+            return Ok(absolute);
+        };
+        trailing.push(name.to_os_string());
+        candidate = parent;
+    }
 }
 
 /// Absolute form of a path that need not exist yet.
@@ -294,6 +327,33 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     } else {
         Ok(std::env::current_dir()?.join(path))
     }
+}
+
+/// Drop Windows' `\\?\` extended-length prefix so paths stay readable in
+/// output and in the database. Only plain drive paths are rewritten; UNC and
+/// device paths keep the prefix, because removing it there changes meaning.
+#[cfg(windows)]
+fn simplified(path: PathBuf) -> PathBuf {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path;
+    };
+
+    match prefix.kind() {
+        Prefix::VerbatimDisk(letter) => {
+            let mut simplified = PathBuf::from(format!("{}:\\", letter as char));
+            simplified.extend(components.filter(|part| !matches!(part, Component::RootDir)));
+            simplified
+        }
+        _ => path,
+    }
+}
+
+#[cfg(not(windows))]
+fn simplified(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn archive_error(err: sevenz_rust2::Error) -> Error {
@@ -432,6 +492,21 @@ mod tests {
         let source = dir.path().join("photos");
 
         let err = create(&source, &source.join("self.7z"), &Options::default()).unwrap_err();
+        assert!(err.to_string().contains("inside the folder"), "{err}");
+    }
+
+    /// The destination guard has to survive the source and destination being
+    /// spelled differently. A symlink is the portable stand-in for what
+    /// Windows does natively with `\\?\` prefixes and 8.3 short names.
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_write_into_the_source_folder_by_another_name() {
+        let dir = fixture();
+        let source = dir.path().join("photos");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+
+        let err = create(&source, &link.join("self.7z"), &Options::default()).unwrap_err();
         assert!(err.to_string().contains("inside the folder"), "{err}");
     }
 
