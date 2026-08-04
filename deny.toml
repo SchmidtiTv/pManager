@@ -11,22 +11,24 @@
 version = 2
 confidence-threshold = 0.9
 
-# Permissive licenses only — all of these allow commercial and closed-source
-# distribution, subject to keeping the copyright/license notices.
+# vmanager itself carries no `license` field (it is `publish = false`), and
+# picking one is the repository owner's decision, not a dependency question.
+# Skip unpublished workspace crates so the check stays about third-party code.
+# Once a project license is chosen, set `license` in Cargo.toml; this can then
+# go away.
+private = { ignore = true }
+
+# Exactly the licenses present in the tree today — all permissive, all fine for
+# commercial and closed-source distribution as long as notices are kept.
+# Deliberately not padded with licenses we do not use: a new dependency under
+# anything else should fail here and get a deliberate decision, not sail
+# through on a pre-approved list.
 allow = [
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "CC0-1.0",
-    "ISC",
     "MIT",
-    "MIT-0",
-    "MPL-2.0",   # file-level copyleft; obligations only apply if we modify the crate's own files
-    "Unicode-3.0",
-    "Unlicense",
-    "Zlib",
-    "0BSD",
+    "MPL-2.0",     # file-level copyleft (option-ext); only binds if we modify that crate
+    "Unicode-3.0", # unicode-ident, alongside MIT/Apache-2.0
+    "Zlib",        # foldhash
 ]
 
 [bans]
