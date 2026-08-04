@@ -276,6 +276,21 @@ mod tests {
     }
 
     #[test]
+    fn three_component_versions_order_on_the_patch_number() {
+        // Nothing is special about three components — every digit run in the
+        // name becomes one, so patch-level releases order the same way major
+        // ones do, including across a two-digit minor.
+        let listing = sort(vec![
+            folder("4.10.4", 100),
+            folder("4.9.12", 200),
+            folder("4.10.3", 300),
+            folder("4.10", 400),
+        ]);
+
+        assert_eq!(names(&listing), ["4.9.12", "4.10", "4.10.3", "4.10.4"]);
+    }
+
+    #[test]
     fn a_version_number_too_large_for_u64_saturates() {
         let huge = "9".repeat(40);
         assert_eq!(Version::parse(&huge).unwrap().parts(), &[u64::MAX]);

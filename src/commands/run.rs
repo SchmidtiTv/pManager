@@ -242,12 +242,13 @@ fn sweep_folder(
 
 /// Save the archive to the database.
 ///
-/// As in `vmanager archive create`, a database problem is a warning rather
-/// than a failure: the archive is already on disk and the folder it replaced
-/// is already gone, so discarding the sweep at this point would help nobody.
+/// A database problem is a warning rather than a failure: the archive is
+/// already on disk and the folder it replaced is already gone, so failing the
+/// sweep at this point would help nobody. The files are the source of truth;
+/// the database only records them.
 fn record(db: &Database, summary: &crate::archive::Summary, target: &Target) {
     let folder_id = target.record.as_ref().map(|record| record.id);
-    match db.record_archive_for(summary, folder_id) {
+    match db.record_archive(summary, folder_id) {
         Ok(id) => tracing::info!(id, "recorded archive"),
         Err(err) => tracing::warn!(
             error = %err,

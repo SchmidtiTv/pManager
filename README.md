@@ -57,17 +57,6 @@ vmanager [OPTIONS] <COMMAND>
 | `schedule install` | Register the daily run with Windows Task Scheduler |
 | `schedule uninstall` | Remove the scheduled task |
 | `schedule status` | Show the scheduled task |
-| `archive create <FOLDER>` | Compress a folder into a `.7z` archive |
-| `archive list` | List archives recorded in the database |
-| `archive forget <ID>` | Remove a record, leaving the archive file alone |
-| `archive prune` | Drop records whose archive file is gone |
-| `db path` | Print the database path (without creating it) |
-| `db init` | Create the database and run pending migrations |
-| `db status` | Show schema version and row counts |
-| `config show` | Print the configuration actually in effect, as TOML |
-| `config path` | Print the path of the configuration file |
-| `config init` | Write a commented starter configuration file |
-| `completions <SHELL>` | Print a shell completion script |
 
 ### Global options
 
@@ -215,49 +204,13 @@ it again. An explicit `--config` is carried into the task.
 On non-Windows platforms these commands report that Task Scheduler is not
 available; run `vmanager run` from cron or a systemd timer instead.
 
-## Archiving by hand
-
-`vmanager run` is the everyday command; `vmanager archive` is the same
-compression exposed directly, for a folder that has nothing to do with version
-management.
-
-```sh
-vmanager archive create ~/photos                 # writes ./photos.7z
-vmanager archive create ~/photos -o /backup/photos.7z
-vmanager archive create ~/code -x .git -x target # skip by name, repeatable
-vmanager archive create ~/big --level 9          # 0 fastest … 9 smallest
-vmanager archive create ~/big --threads 8        # faster, marginally larger
-```
-
-Archives use LZMA2 in solid mode — the same defaults as 7-Zip itself — and are
-readable by any 7-Zip, p7zip or Windows Explorer plugin. Entry names keep the
-top-level folder (`photos/…`), matching `7z a photos.7z photos`.
-
-Details worth knowing:
-
-- Symlinks are skipped rather than followed, so an archive can never loop or
-  silently inline a link's target.
-- Empty directories are not stored.
-- A partially written archive is deleted if compression fails, so a `.7z` on
-  disk is always complete.
-- The destination may not sit inside the folder being archived.
-- `--force` is required to overwrite an existing archive.
-
-Every successful run is recorded in the database (`--no-record` opts out). If
-the database write fails the archive still succeeds — a warning is logged
-instead, since the file on disk is the thing that matters.
-
-```
-$ vmanager archive list
- 1  2026-08-04T11:35:41Z      4 files  294.2 KiB  /backup/photos.7z
-```
-
 ## Database
 
-A single SQLite file, by default `vmanager.db` inside the data directory
-(`vmanager db path` prints it). SQLite is linked statically via `rusqlite`'s
-bundled build, so there is no system package to install and no version skew
-between machines.
+A single SQLite file, by default `vmanager.db` inside the platform data
+directory (set `data_dir` or `database` to move it). It is created and migrated
+automatically on first use — there is nothing to initialize. SQLite is linked
+statically via `rusqlite`'s bundled build, so there is no system package to
+install and no version skew between machines.
 
 The schema is versioned with SQLite's own `user_version` pragma and migrated on
 open: each entry in `MIGRATIONS` (`src/db.rs`) runs inside a transaction, so an
@@ -280,14 +233,19 @@ folders on disk are. Deleting the database loses the history, not the versions.
 
 ## Configuration
 
-`vmanager config init` writes a commented starter file to the platform
-configuration directory:
+Configuration is optional — every key has a default. To change one, write a
+`config.toml` by hand in the platform configuration directory:
 
 | Platform | Path |
 | --- | --- |
 | Linux | `~/.config/vmanager/config.toml` |
 | macOS | `~/Library/Application Support/vmanager/config.toml` |
 | Windows | `%APPDATA%\vmanager\config.toml` |
+
+```toml
+keep_versions = 3
+compression_level = 9
+```
 
 Values are layered, lowest precedence first: built-in defaults, then the
 configuration file, then environment variables, then command line flags. A
@@ -306,17 +264,6 @@ The keep count is resolved per folder, highest precedence first: `run --keep`,
 then the folder's own `--keep` from `folder add`, then `keep_versions`. A
 `keep_versions` of `0` is rejected rather than obeyed — it would archive every
 copy of a tool, which is never what the key is meant to say.
-
-`vmanager config show` prints the values actually in effect, not just the ones
-written down.
-
-## Shell completions
-
-```sh
-vmanager completions bash > /etc/bash_completion.d/vmanager
-vmanager completions zsh  > ~/.zfunc/_vmanager
-vmanager completions fish > ~/.config/fish/completions/vmanager.fish
-```
 
 ## Layout
 
@@ -337,10 +284,6 @@ src/
     run.rs            `vmanager run`
     folder.rs         `vmanager folder`
     schedule.rs       `vmanager schedule`
-    archive.rs        `vmanager archive`
-    db.rs             `vmanager db`
-    config.rs         `vmanager config`
-    completions.rs    `vmanager completions`
 tests/
   cli.rs              end-to-end tests that run the built binary
 ```

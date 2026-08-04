@@ -22,7 +22,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Ordered schema migrations. The index + 1 is the resulting `user_version`.
 const MIGRATIONS: &[&str] = &[
-    // v1 — record of every archive created by `vmanager archive create`.
+    // v1 — record of every archive written.
     r#"
     CREATE TABLE archives (
         id            INTEGER PRIMARY KEY,
@@ -52,23 +52,6 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX archives_folder_id ON archives (folder_id);
     "#,
 ];
-
-/// One row of the `archives` table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArchiveRecord {
-    pub id: i64,
-    pub source_path: PathBuf,
-    pub archive_path: PathBuf,
-    pub file_count: u64,
-    pub source_bytes: u64,
-    pub archive_bytes: u64,
-    /// UTC, ISO-8601 (`2026-08-04T11:30:00Z`), written by SQLite.
-    pub created_at: String,
-    /// The registered folder this archive came from, when `vmanager run`
-    /// created it. `None` for a hand-made `vmanager archive create`, and reset
-    /// to `None` if that folder is later unregistered.
-    pub folder_id: Option<i64>,
-}
 
 /// One row of the `folders` table: a folder `vmanager run` watches.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,13 +119,8 @@ impl Database {
         MIGRATIONS.len() as u32
     }
 
-    /// Record a finished archive, returning its row id.
-    pub fn record_archive(&self, summary: &Summary) -> Result<i64> {
-        self.record_archive_for(summary, None)
-    }
-
     /// Record a finished archive, attributing it to a registered folder.
-    pub fn record_archive_for(&self, summary: &Summary, folder_id: Option<i64>) -> Result<i64> {
+    pub fn record_archive(&self, summary: &Summary, folder_id: Option<i64>) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO archives (source_path, archive_path, file_count, source_bytes, archive_bytes, folder_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -166,74 +144,6 @@ impl Database {
         )?;
 
         Ok(self.conn.last_insert_rowid())
-    }
-
-    /// The most recently created archives, newest first.
-    pub fn recent_archives(&self, limit: u32) -> Result<Vec<ArchiveRecord>> {
-        let mut statement = self.conn.prepare(
-            "SELECT id, source_path, archive_path, file_count, source_bytes, archive_bytes, created_at, folder_id
-               FROM archives
-              ORDER BY created_at DESC, id DESC
-              LIMIT ?1",
-        )?;
-
-        let rows = statement.query_map([limit], row_to_record)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Look up a single archive by row id.
-    pub fn archive(&self, id: i64) -> Result<ArchiveRecord> {
-        self.conn
-            .query_row(
-                "SELECT id, source_path, archive_path, file_count, source_bytes, archive_bytes, created_at, folder_id
-                   FROM archives WHERE id = ?1",
-                [id],
-                row_to_record,
-            )
-            .optional()?
-            .ok_or_else(|| Error::NotFound {
-                kind: "archive",
-                name: id.to_string(),
-            })
-    }
-
-    /// Drop a record. The archive file itself is left alone.
-    pub fn forget_archive(&self, id: i64) -> Result<()> {
-        let removed = self
-            .conn
-            .execute("DELETE FROM archives WHERE id = ?1", [id])?;
-        if removed == 0 {
-            return Err(Error::NotFound {
-                kind: "archive",
-                name: id.to_string(),
-            });
-        }
-        Ok(())
-    }
-
-    /// Drop records whose archive file no longer exists, returning them.
-    pub fn prune_missing(&self) -> Result<Vec<ArchiveRecord>> {
-        let stale: Vec<ArchiveRecord> = self
-            .recent_archives(u32::MAX)?
-            .into_iter()
-            .filter(|record| !record.archive_path.exists())
-            .collect();
-
-        for record in &stale {
-            self.conn
-                .execute("DELETE FROM archives WHERE id = ?1", [record.id])?;
-        }
-
-        Ok(stale)
-    }
-
-    /// Number of archives on record.
-    pub fn archive_count(&self) -> Result<u64> {
-        Ok(self
-            .conn
-            .query_row("SELECT COUNT(*) FROM archives", [], |row| {
-                row.get::<_, i64>(0)
-            })? as u64)
     }
 
     /// Register a folder for `vmanager run` to sweep.
@@ -300,15 +210,6 @@ impl Database {
         )? as u64)
     }
 
-    /// Number of registered folders.
-    pub fn folder_count(&self) -> Result<u64> {
-        Ok(self
-            .conn
-            .query_row("SELECT COUNT(*) FROM folders", [], |row| {
-                row.get::<_, i64>(0)
-            })? as u64)
-    }
-
     /// Connection-level settings applied on every open.
     fn configure(&mut self) -> Result<()> {
         self.conn.busy_timeout(BUSY_TIMEOUT)?;
@@ -352,19 +253,6 @@ impl Database {
     }
 }
 
-fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArchiveRecord> {
-    Ok(ArchiveRecord {
-        id: row.get(0)?,
-        source_path: PathBuf::from(row.get::<_, String>(1)?),
-        archive_path: PathBuf::from(row.get::<_, String>(2)?),
-        file_count: row.get::<_, i64>(3)? as u64,
-        source_bytes: row.get::<_, i64>(4)? as u64,
-        archive_bytes: row.get::<_, i64>(5)? as u64,
-        created_at: row.get(6)?,
-        folder_id: row.get(7)?,
-    })
-}
-
 fn row_to_folder(row: &rusqlite::Row<'_>) -> rusqlite::Result<FolderRecord> {
     Ok(FolderRecord {
         id: row.get(0)?,
@@ -388,11 +276,18 @@ mod tests {
         }
     }
 
+    /// Register a folder and record one archive against it.
+    fn folder_with_archive(db: &Database, path: &str, archive: &str) -> i64 {
+        let (id, _) = db.add_folder(Path::new(path), None).unwrap();
+        db.record_archive(&summary(archive), Some(id)).unwrap();
+        id
+    }
+
     #[test]
     fn fresh_database_is_fully_migrated() {
         let db = Database::open_in_memory().unwrap();
         assert_eq!(db.schema_version().unwrap(), Database::target_version());
-        assert_eq!(db.archive_count().unwrap(), 0);
+        assert!(db.folders().unwrap().is_empty());
     }
 
     #[test]
@@ -401,100 +296,39 @@ mod tests {
         let path = dir.path().join("nested").join("vmanager.db");
 
         let first = Database::open(&path).unwrap();
-        first.record_archive(&summary("/tmp/a.7z")).unwrap();
+        let id = folder_with_archive(&first, "/tools/blender", "/tools/blender/1.0.7z");
         drop(first);
 
         let second = Database::open(&path).unwrap();
         assert_eq!(second.schema_version().unwrap(), Database::target_version());
-        assert_eq!(second.archive_count().unwrap(), 1);
-    }
-
-    #[test]
-    fn records_and_reads_back_an_archive() {
-        let db = Database::open_in_memory().unwrap();
-        let id = db.record_archive(&summary("/tmp/photos.7z")).unwrap();
-
-        let record = db.archive(id).unwrap();
-        assert_eq!(record.archive_path, PathBuf::from("/tmp/photos.7z"));
-        assert_eq!(record.source_path, PathBuf::from("/data/photos"));
-        assert_eq!(record.file_count, 3);
-        assert_eq!(record.archive_bytes, 256);
-        assert!(
-            record.created_at.ends_with('Z') && record.created_at.len() == 20,
-            "unexpected timestamp {}",
-            record.created_at
-        );
+        assert_eq!(second.folders().unwrap().len(), 1);
+        assert_eq!(second.archive_count_for_folder(id).unwrap(), 1);
     }
 
     #[test]
     fn re_archiving_the_same_path_updates_the_row() {
         let db = Database::open_in_memory().unwrap();
-        db.record_archive(&summary("/tmp/photos.7z")).unwrap();
+        let id = folder_with_archive(&db, "/tools/blender", "/tools/blender/1.0.7z");
 
-        let mut second = summary("/tmp/photos.7z");
+        // A forced re-run writes the same archive path again; that must update
+        // the existing row rather than accumulate duplicates.
+        let mut second = summary("/tools/blender/1.0.7z");
         second.file_count = 99;
-        db.record_archive(&second).unwrap();
+        db.record_archive(&second, Some(id)).unwrap();
 
-        assert_eq!(db.archive_count().unwrap(), 1);
-        assert_eq!(db.recent_archives(10).unwrap()[0].file_count, 99);
+        assert_eq!(db.archive_count_for_folder(id).unwrap(), 1);
     }
 
     #[test]
-    fn recent_archives_are_newest_first_and_limited() {
+    fn archives_are_counted_per_folder() {
         let db = Database::open_in_memory().unwrap();
-        for name in ["/tmp/a.7z", "/tmp/b.7z", "/tmp/c.7z"] {
-            db.record_archive(&summary(name)).unwrap();
-        }
-
-        let recent = db.recent_archives(2).unwrap();
-        assert_eq!(recent.len(), 2);
-        // Same-second timestamps tie-break on id, so the newest row wins.
-        assert_eq!(recent[0].archive_path, PathBuf::from("/tmp/c.7z"));
-    }
-
-    #[test]
-    fn forgetting_an_unknown_archive_is_not_found() {
-        let db = Database::open_in_memory().unwrap();
-        assert!(matches!(
-            db.forget_archive(42),
-            Err(Error::NotFound {
-                kind: "archive",
-                ..
-            })
-        ));
-        assert!(matches!(db.archive(42), Err(Error::NotFound { .. })));
-    }
-
-    #[test]
-    fn forgetting_removes_only_the_named_row() {
-        let db = Database::open_in_memory().unwrap();
-        let keep = db.record_archive(&summary("/tmp/keep.7z")).unwrap();
-        let drop_me = db.record_archive(&summary("/tmp/drop.7z")).unwrap();
-
-        db.forget_archive(drop_me).unwrap();
-        assert_eq!(db.archive_count().unwrap(), 1);
-        assert!(db.archive(keep).is_ok());
-    }
-
-    #[test]
-    fn prune_drops_records_whose_file_is_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let present = dir.path().join("present.7z");
-        std::fs::write(&present, b"7z").unwrap();
-
-        let db = Database::open_in_memory().unwrap();
-        db.record_archive(&summary(present.to_str().unwrap()))
-            .unwrap();
-        db.record_archive(&summary("/tmp/definitely/missing.7z"))
+        let blender = folder_with_archive(&db, "/tools/blender", "/tools/blender/1.0.7z");
+        let godot = folder_with_archive(&db, "/tools/godot", "/tools/godot/3.5.7z");
+        db.record_archive(&summary("/tools/blender/2.0.7z"), Some(blender))
             .unwrap();
 
-        let pruned = db.prune_missing().unwrap();
-        assert_eq!(pruned.len(), 1);
-        assert_eq!(
-            pruned[0].archive_path,
-            PathBuf::from("/tmp/definitely/missing.7z")
-        );
-        assert_eq!(db.archive_count().unwrap(), 1);
+        assert_eq!(db.archive_count_for_folder(blender).unwrap(), 2);
+        assert_eq!(db.archive_count_for_folder(godot).unwrap(), 1);
     }
 
     #[test]
@@ -508,7 +342,6 @@ mod tests {
         assert_eq!(folders[0].id, id);
         assert_eq!(folders[0].path, PathBuf::from("/tools/blender"));
         assert_eq!(folders[0].keep, Some(3));
-        assert_eq!(db.folder_count().unwrap(), 1);
     }
 
     #[test]
@@ -519,7 +352,7 @@ mod tests {
         let (second, inserted) = db.add_folder(Path::new("/tools/godot"), Some(5)).unwrap();
         assert_eq!(first, second, "the row should be reused, not duplicated");
         assert!(!inserted);
-        assert_eq!(db.folder_count().unwrap(), 1);
+        assert_eq!(db.folders().unwrap().len(), 1);
         assert_eq!(db.folders().unwrap()[0].keep, Some(5));
 
         // Clearing the override is an update too, not a no-op.
@@ -540,27 +373,25 @@ mod tests {
     }
 
     #[test]
-    fn unregistering_keeps_the_archives_it_produced() {
+    fn unregistering_orphans_its_archives_instead_of_dropping_them() {
         let db = Database::open_in_memory().unwrap();
-        let (folder_id, _) = db.add_folder(Path::new("/tools/blender"), None).unwrap();
-        let archive_id = db
-            .record_archive_for(&summary("/tools/blender/4.1.7z"), Some(folder_id))
-            .unwrap();
-        assert_eq!(db.archive_count_for_folder(folder_id).unwrap(), 1);
+        let id = folder_with_archive(&db, "/tools/blender", "/tools/blender/4.1.7z");
+        assert_eq!(db.archive_count_for_folder(id).unwrap(), 1);
 
         db.remove_folder(Path::new("/tools/blender")).unwrap();
 
-        // ON DELETE SET NULL: the archive record survives, orphaned.
-        let record = db.archive(archive_id).unwrap();
-        assert_eq!(record.folder_id, None);
-        assert_eq!(db.archive_count().unwrap(), 1);
-    }
-
-    #[test]
-    fn a_hand_made_archive_belongs_to_no_folder() {
-        let db = Database::open_in_memory().unwrap();
-        let id = db.record_archive(&summary("/tmp/photos.7z")).unwrap();
-        assert_eq!(db.archive(id).unwrap().folder_id, None);
+        // ON DELETE SET NULL rather than CASCADE: the .7z is still on disk, so
+        // its record should survive the registration that produced it.
+        assert_eq!(db.archive_count_for_folder(id).unwrap(), 0);
+        let orphans: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM archives WHERE folder_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphans, 1);
     }
 
     #[test]
