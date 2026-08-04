@@ -120,7 +120,7 @@ fn logs_go_to_stderr_not_stdout() {
 
     // `-vv` enables debug logging, which reports the missing config file.
     vmanager()
-        .args(["folder", "list", "-vv", "--config"])
+        .args(["list", "-vv", "--config"])
         .arg(&path)
         .assert()
         .success()
@@ -190,11 +190,11 @@ fn registering_a_folder_and_sweeping_it_archives_the_oldest_versions() {
     assert!(tool.join("4.10").is_dir());
 
     vmanager()
-        .args(["folder", "list", "--config"])
+        .args(["list", "--config"])
         .arg(&config)
         .assert()
         .success()
-        .stdout(predicate::str::contains("2 unpacked, 2 archived"));
+        .stdout(predicate::str::contains("keep 2, 2 unpacked, 2 archived"));
 }
 
 #[test]
@@ -370,12 +370,12 @@ fn folders_without_version_numbers_are_left_alone() {
 }
 
 #[test]
-fn folder_list_shows_what_is_pending_and_remove_unregisters() {
+fn listing_reflects_registration_and_remove_unregisters() {
     let (dir, config) = isolated();
     let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0", "3.0"]);
 
     vmanager()
-        .args(["folder", "list", "--config"])
+        .args(["list", "--config"])
         .arg(&config)
         .assert()
         .success()
@@ -390,12 +390,11 @@ fn folder_list_shows_what_is_pending_and_remove_unregisters() {
         .success();
 
     vmanager()
-        .args(["folder", "list", "--config"])
+        .args(["list", "--config"])
         .arg(&config)
         .assert()
         .success()
-        .stdout(predicate::str::contains("keep 2"))
-        .stdout(predicate::str::contains("3 unpacked, 1 to archive"));
+        .stdout(predicate::str::contains("keep 2, 3 unpacked, 0 archived"));
 
     vmanager()
         .args(["folder", "remove"])
@@ -440,7 +439,7 @@ fn registering_the_same_folder_twice_updates_it() {
         .stdout(predicate::str::contains("keeping 5"));
 
     vmanager()
-        .args(["folder", "list", "--config"])
+        .args(["list", "--config"])
         .arg(&config)
         .assert()
         .success()
@@ -549,7 +548,7 @@ fn sweeping_an_unregistered_folder_works_without_registering_it() {
 
     // Sweeping without registering leaves the registry empty…
     vmanager()
-        .args(["folder", "list", "--config"])
+        .args(["list", "--config"])
         .arg(&config)
         .assert()
         .success()
@@ -600,4 +599,141 @@ fn scheduling_off_windows_explains_itself() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("Task Scheduler"));
+}
+
+#[test]
+fn list_shows_archived_and_unpacked_versions_oldest_first() {
+    let (dir, config) = isolated();
+    let tool = tool_folder(dir.path(), "blender", &["4.1", "4.2", "4.3", "4.10"]);
+
+    vmanager()
+        .args(["folder", "add"])
+        .arg(&tool)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+    vmanager()
+        .args(["run", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+
+    let rendered = String::from_utf8(
+        vmanager()
+            .args(["list", "--config"])
+            .arg(&config)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone(),
+    )
+    .unwrap();
+
+    // Oldest first, archives above the versions still on disk, and 4.10 last
+    // because the ordering is numeric.
+    let order: Vec<&str> = rendered
+        .lines()
+        .filter_map(|line| line.strip_prefix("  "))
+        .map(|line| line.split_whitespace().next().unwrap_or_default())
+        .collect();
+    assert_eq!(order, ["4.1", "4.2", "4.3", "4.10"], "got:\n{rendered}");
+
+    assert!(
+        rendered.contains("keep 2, 2 unpacked, 2 archived"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("archived"), "{rendered}");
+    assert!(rendered.contains("unpacked"), "{rendered}");
+    // The original size comes from the database, not from the .7z.
+    assert!(rendered.contains("in 1 file(s)"), "{rendered}");
+}
+
+#[test]
+fn list_can_be_narrowed_to_one_state_or_one_folder() {
+    let (dir, config) = isolated();
+    let blender = tool_folder(dir.path(), "blender", &["1.0", "2.0", "3.0"]);
+    let godot = tool_folder(dir.path(), "godot", &["1.0", "2.0"]);
+
+    for folder in [&blender, &godot] {
+        vmanager()
+            .args(["folder", "add"])
+            .arg(folder)
+            .arg("--config")
+            .arg(&config)
+            .assert()
+            .success();
+    }
+    vmanager()
+        .args(["run", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+
+    vmanager()
+        .args(["list", "--archived", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("archived"))
+        .stdout(predicate::str::contains("unpacked\n").not());
+
+    vmanager()
+        .args(["list", "--unpacked", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("archived  ").not());
+
+    vmanager()
+        .args(["list", "--folder"])
+        .arg(&godot)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("godot"))
+        .stdout(predicate::str::contains("blender").not());
+}
+
+#[test]
+fn list_reports_an_archive_the_database_has_never_seen() {
+    let (dir, config) = isolated();
+    let tool = tool_folder(dir.path(), "blender", &["2.0"]);
+    // An archive from an older machine, or one whose database was deleted:
+    // the file exists, so it should be listed even without a record.
+    std::fs::write(tool.join("1.0.7z"), b"pretend archive").unwrap();
+
+    vmanager()
+        .args(["list", "--folder"])
+        .arg(&tool)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1.0"))
+        .stdout(predicate::str::contains("not in the database"));
+}
+
+#[test]
+fn list_survives_a_folder_that_has_gone_missing() {
+    let (dir, config) = isolated();
+    let tool = tool_folder(dir.path(), "blender", &["1.0", "2.0"]);
+
+    vmanager()
+        .args(["folder", "add"])
+        .arg(&tool)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+    std::fs::remove_dir_all(&tool).unwrap();
+
+    vmanager()
+        .args(["list", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("unavailable"));
 }

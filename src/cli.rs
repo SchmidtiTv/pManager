@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 const AFTER_HELP: &str = "\
 Getting started:
   vmanager folder add C:\\Tools\\Blender   Watch a tool's version folders
+  vmanager list                           See what each folder holds
   vmanager run --dry-run                  See what would be archived
   vmanager run                            Archive all but the newest versions
   vmanager schedule install               Run it daily at 03:00
@@ -136,6 +137,9 @@ pub enum Command {
     /// Sweep every registered folder: archive versions beyond the newest few
     Run(crate::commands::run::Args),
 
+    /// Show every version of every registered folder, unpacked and archived
+    List(crate::commands::list::Args),
+
     /// Register the folders that `vmanager run` sweeps
     Folder(crate::commands::folder::Args),
 
@@ -163,29 +167,23 @@ mod tests {
                 .log_level()
         };
 
-        assert_eq!(parse(&["vmanager", "folder", "list"]), tracing::Level::WARN);
+        assert_eq!(parse(&["vmanager", "list"]), tracing::Level::WARN);
+        assert_eq!(parse(&["vmanager", "-v", "list"]), tracing::Level::INFO);
+        assert_eq!(parse(&["vmanager", "-vvv", "list"]), tracing::Level::TRACE);
         assert_eq!(
-            parse(&["vmanager", "-v", "folder", "list"]),
-            tracing::Level::INFO
-        );
-        assert_eq!(
-            parse(&["vmanager", "-vvv", "folder", "list"]),
-            tracing::Level::TRACE
-        );
-        assert_eq!(
-            parse(&["vmanager", "--quiet", "folder", "list"]),
+            parse(&["vmanager", "--quiet", "list"]),
             tracing::Level::ERROR
         );
     }
 
     #[test]
     fn verbose_and_quiet_conflict() {
-        assert!(Cli::try_parse_from(["vmanager", "-v", "-q", "folder", "list"]).is_err());
+        assert!(Cli::try_parse_from(["vmanager", "-v", "-q", "list"]).is_err());
     }
 
     #[test]
     fn globals_are_accepted_after_the_subcommand() {
-        let cli = Cli::try_parse_from(["vmanager", "folder", "list", "--color", "never"])
+        let cli = Cli::try_parse_from(["vmanager", "list", "--color", "never"])
             .expect("globals should propagate to subcommands");
         assert_eq!(cli.globals.color, ColorChoice::Never);
     }

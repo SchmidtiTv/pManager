@@ -53,6 +53,25 @@ const MIGRATIONS: &[&str] = &[
     "#,
 ];
 
+/// What the `archives` table remembers about one `.7z`.
+///
+/// The size of the archive is on disk to be read; what only the database knows
+/// is what went *into* it — how large the version was before compression, and
+/// how many files it held. That is what `vmanager list` reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveRecord {
+    /// The folder that was compressed.
+    pub source_path: PathBuf,
+    /// Files stored in the archive.
+    pub file_count: u64,
+    /// Size of those files before compression.
+    pub source_bytes: u64,
+    /// Size of the archive when it was written.
+    pub archive_bytes: u64,
+    /// UTC, ISO-8601 (`2026-08-04T11:30:00Z`), written by SQLite.
+    pub created_at: String,
+}
+
 /// One row of the `folders` table: a folder `vmanager run` watches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderRecord {
@@ -144,6 +163,31 @@ impl Database {
         )?;
 
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// What is known about the archive at `path`, if anything.
+    ///
+    /// Returns `None` rather than an error for an archive with no record: a
+    /// `.7z` sitting next to a version folder is real whether or not this
+    /// database was the one that wrote it, so callers report what they can.
+    pub fn archive_at(&self, path: &Path) -> Result<Option<ArchiveRecord>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT source_path, file_count, source_bytes, archive_bytes, created_at
+                   FROM archives WHERE archive_path = ?1",
+                [path.to_string_lossy()],
+                |row| {
+                    Ok(ArchiveRecord {
+                        source_path: PathBuf::from(row.get::<_, String>(0)?),
+                        file_count: row.get::<_, i64>(1)? as u64,
+                        source_bytes: row.get::<_, i64>(2)? as u64,
+                        archive_bytes: row.get::<_, i64>(3)? as u64,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     /// Register a folder for `vmanager run` to sweep.
@@ -317,6 +361,39 @@ mod tests {
         db.record_archive(&second, Some(id)).unwrap();
 
         assert_eq!(db.archive_count_for_folder(id).unwrap(), 1);
+    }
+
+    #[test]
+    fn an_archive_is_read_back_by_its_path() {
+        let db = Database::open_in_memory().unwrap();
+        folder_with_archive(&db, "/tools/blender", "/tools/blender/1.0.7z");
+
+        let record = db
+            .archive_at(Path::new("/tools/blender/1.0.7z"))
+            .unwrap()
+            .expect("the archive was just recorded");
+        assert_eq!(record.source_path, PathBuf::from("/data/photos"));
+        assert_eq!(record.file_count, 3);
+        assert_eq!(record.source_bytes, 1024);
+        assert_eq!(record.archive_bytes, 256);
+        assert!(
+            record.created_at.ends_with('Z') && record.created_at.len() == 20,
+            "unexpected timestamp {}",
+            record.created_at
+        );
+    }
+
+    #[test]
+    fn an_unrecorded_archive_is_none_rather_than_an_error() {
+        let db = Database::open_in_memory().unwrap();
+
+        // A .7z from another machine still exists on disk; listing it should
+        // not fail just because this database never wrote it.
+        assert!(
+            db.archive_at(Path::new("/tools/blender/9.9.7z"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

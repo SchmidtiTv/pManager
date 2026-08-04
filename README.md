@@ -35,6 +35,7 @@ compression is pure Rust.
 ```sh
 vmanager folder add C:\Tools\Blender     # watch this tool's versions
 vmanager folder add C:\Tools\Godot --keep 3
+vmanager list                            # see what you have
 vmanager run --dry-run                   # see what would be archived
 vmanager run                             # do it
 vmanager schedule install                # …and every day at 03:00
@@ -51,8 +52,8 @@ vmanager [OPTIONS] <COMMAND>
 | Command | Description |
 | --- | --- |
 | `run` | Sweep every registered folder: archive all but the newest versions |
+| `list` | Show every version of every registered folder |
 | `folder add <FOLDER>` | Register a folder whose versions should be managed |
-| `folder list` | Show the registered folders and what they hold |
 | `folder remove <FOLDER>` | Unregister a folder; nothing on disk is touched |
 | `schedule install` | Register the daily run with Windows Task Scheduler |
 | `schedule uninstall` | Remove the scheduled task |
@@ -100,17 +101,40 @@ itself. Register `C:\Tools\Blender`, the folder that contains `4.1`, `4.2` and
 ```sh
 vmanager folder add C:\Tools\Blender          # keep_versions applies (2)
 vmanager folder add C:\Tools\Godot --keep 3   # …unless overridden per folder
-vmanager folder list
 vmanager folder remove C:\Tools\Godot
 ```
 
-`vmanager folder list` shows what each one currently holds:
+### What you have
+
+`vmanager list` shows every version of every registered folder, oldest first,
+whether it is still unpacked or has already been swept into a `.7z`:
 
 ```
-$ vmanager folder list
-C:\Tools\Blender  keep 2  4 unpacked, 2 to archive, 0 archived
-C:\Tools\Godot    keep 3  3 unpacked, 5 archived
+$ vmanager list
+C:\Tools\Blender  keep 2, 2 unpacked, 2 archived
+  4.1   archived  412.4 MiB  from 1.9 GiB in 842 file(s)
+  4.2   archived  430.1 MiB  from 2.0 GiB in 851 file(s)
+  4.3   unpacked
+  4.10  unpacked
+C:\Tools\Godot  keep 3, 3 unpacked, 0 archived
+  3.5   unpacked
+  4.0   unpacked
+  4.1   unpacked
 ```
+
+The size on the left is the archive as it sits on disk; `from …` is what it
+held before compression, which is what restoring it would cost you. That part
+comes from the database — an archive with no record still appears, just marked
+`(not in the database)`, because the file is what matters.
+
+```sh
+vmanager list --archived              # only the compressed versions
+vmanager list --unpacked              # only the ones still taking up room
+vmanager list --folder C:\Tools\Godot # one folder; repeatable
+```
+
+The `unpacked`/`archived` counts in the header describe the folder itself, so
+they stay put when a filter narrows the lines below them.
 
 ### The sweep
 
@@ -223,7 +247,9 @@ Connections open with WAL journaling, `foreign_keys = ON` and a 5 second busy
 timeout, so a second `vmanager` waits its turn instead of failing.
 
 Two tables: `folders` is the registry `vmanager run` walks, and `archives`
-records every `.7z` written, pointing back at the folder it came from.
+records every `.7z` written, pointing back at the folder it came from. The
+archive records are what let `vmanager list` report a version's original size
+— the one thing a `.7z` cannot tell you by looking at it.
 Unregistering a folder clears that back-reference (`ON DELETE SET NULL`) rather
 than discarding the archive records — the files are still on disk, so their
 history should not vanish with the registration.
@@ -282,6 +308,7 @@ src/
   commands/
     mod.rs            shared Context handed to every subcommand
     run.rs            `vmanager run`
+    list.rs           `vmanager list`
     folder.rs         `vmanager folder`
     schedule.rs       `vmanager schedule`
 tests/
