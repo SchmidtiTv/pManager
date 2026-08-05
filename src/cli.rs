@@ -21,7 +21,7 @@ Getting started:
 
 How a project ages:
   active   ──60 days idle──▶  trimmed   node_modules deleted; `npm install` undoes it
-  trimmed  ─180 days idle──▶  archived  compressed to .7z, folder removed
+  trimmed  ─180 days idle──▶  archived  compressed to .pArchived, folder gone
   archived ──────────────────▶  active  `pmanager restore <PROJECT>`
 
   Idle means no edited files — dependency installs and builds do not count.

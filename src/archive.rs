@@ -1,7 +1,12 @@
-//! Creating and extracting `.7z` archives.
+//! Creating and extracting archives: 7z containers named `.pArchived`.
 //!
 //! Compression is pure Rust ([`sevenz_rust2`]) — no `7z` binary needs to be
 //! installed. Archives use LZMA2 in solid mode, as 7-Zip itself does.
+//!
+//! Nothing here reads the extension: [`extract`] takes whatever path it is
+//! given and the format is recognised from the file's own signature. The name
+//! is a label, not a contract, which is what lets [`EXTENSION`] change without
+//! stranding the archives written under the old one.
 //!
 //! Entry names are relative to the *parent* of the source folder, so archiving
 //! `Code\my-app` yields an archive containing `my-app/…`; a project comes back
@@ -13,8 +18,16 @@ use sevenz_rust2::{ArchiveWriter, encoder_options::Lzma2Options};
 
 use crate::error::{Error, Result};
 
-/// Extension used for every archive this module writes.
-pub const EXTENSION: &str = "7z";
+/// Extension pManager gives the archives it writes.
+///
+/// The container is still 7z — only the name differs, so 7-Zip and every other
+/// tool that sniffs the file signature reads one of these unchanged. The point
+/// is that an archived project is recognisable as pManager's work at a glance,
+/// and does not sit in a folder looking like a `.7z` somebody downloaded.
+///
+/// Archives written before this extension existed are restored from the path
+/// recorded in the database, so a `.7z` from an older version keeps working.
+pub const EXTENSION: &str = "pArchived";
 
 /// Compression level accepted by LZMA2.
 pub const MIN_LEVEL: u32 = 0;
@@ -468,7 +481,7 @@ mod tests {
     fn archives_a_folder() {
         let dir = fixture();
         let source = dir.path().join("photos");
-        let dest = dir.path().join("out").join("photos.7z");
+        let dest = dir.path().join("out").join("photos.pArchived");
 
         let summary = create(&source, &dest, &Options::default()).unwrap();
 
@@ -484,7 +497,7 @@ mod tests {
     #[test]
     fn writes_a_real_7z_container() {
         let dir = fixture();
-        let dest = dir.path().join("photos.7z");
+        let dest = dir.path().join("photos.pArchived");
         create(&dir.path().join("photos"), &dest, &Options::default()).unwrap();
 
         // 7z signature: '7z' BC AF 27 1C
@@ -493,9 +506,36 @@ mod tests {
     }
 
     #[test]
+    fn an_archive_extracts_whatever_it_is_called() {
+        let dir = fixture();
+
+        // `.7z` is what earlier versions wrote, and the database still points
+        // at those; extraction goes by the file's signature, not its name.
+        for name in ["photos.7z", "photos.pArchived", "photos"] {
+            // Written to a directory of their own: an archive called `photos`
+            // would otherwise land on the folder it is archiving.
+            let dest = dir.path().join("archives").join(name);
+            create(&dir.path().join("photos"), &dest, &Options::default()).unwrap();
+
+            let into = dir.path().join(format!("into-{name}"));
+            let restored = extract(&dest, &into).unwrap();
+
+            assert_eq!(
+                restored,
+                into.join("photos"),
+                "`{name}` should come back as the folder it was"
+            );
+            assert_eq!(
+                std::fs::read_to_string(restored.join("a.txt")).unwrap(),
+                "hello"
+            );
+        }
+    }
+
+    #[test]
     fn the_archive_round_trips_with_the_folder_name_intact() {
         let dir = fixture();
-        let dest = dir.path().join("photos.7z");
+        let dest = dir.path().join("photos.pArchived");
         create(&dir.path().join("photos"), &dest, &Options::default()).unwrap();
 
         let out = dir.path().join("restored");
@@ -520,7 +560,7 @@ mod tests {
     #[test]
     fn excluded_files_are_absent_from_the_archive() {
         let dir = fixture();
-        let dest = dir.path().join("photos.7z");
+        let dest = dir.path().join("photos.pArchived");
         let options = Options {
             exclude: vec![".git".to_string(), "b.txt".to_string()],
             ..Options::default()
@@ -545,7 +585,7 @@ mod tests {
 
         let summary = create(
             &dir.path().join("photos"),
-            &dir.path().join("photos.7z"),
+            &dir.path().join("photos.pArchived"),
             &options,
         )
         .unwrap();
@@ -558,7 +598,7 @@ mod tests {
     fn refuses_to_overwrite_without_force() {
         let dir = fixture();
         let source = dir.path().join("photos");
-        let dest = dir.path().join("photos.7z");
+        let dest = dir.path().join("photos.pArchived");
 
         create(&source, &dest, &Options::default()).unwrap();
         assert!(matches!(
@@ -578,7 +618,7 @@ mod tests {
         let dir = fixture();
         let source = dir.path().join("photos");
 
-        let err = create(&source, &source.join("self.7z"), &Options::default()).unwrap_err();
+        let err = create(&source, &source.join("self.pArchived"), &Options::default()).unwrap_err();
         assert!(err.to_string().contains("inside the folder"), "{err}");
     }
 
@@ -593,7 +633,7 @@ mod tests {
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&source, &link).unwrap();
 
-        let err = create(&source, &link.join("self.7z"), &Options::default()).unwrap_err();
+        let err = create(&source, &link.join("self.pArchived"), &Options::default()).unwrap_err();
         assert!(err.to_string().contains("inside the folder"), "{err}");
     }
 
@@ -604,7 +644,7 @@ mod tests {
         assert!(matches!(
             create(
                 &dir.path().join("absent"),
-                &dir.path().join("x.7z"),
+                &dir.path().join("x.pArchived"),
                 &Options::default()
             ),
             Err(Error::NotFound { .. })
@@ -613,7 +653,7 @@ mod tests {
         assert!(matches!(
             create(
                 &dir.path().join("photos").join("a.txt"),
-                &dir.path().join("x.7z"),
+                &dir.path().join("x.pArchived"),
                 &Options::default()
             ),
             Err(Error::Archive(_))
@@ -626,7 +666,12 @@ mod tests {
         let source = dir.path().join("empty");
         std::fs::create_dir(&source).unwrap();
 
-        let err = create(&source, &dir.path().join("x.7z"), &Options::default()).unwrap_err();
+        let err = create(
+            &source,
+            &dir.path().join("x.pArchived"),
+            &Options::default(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("no files"), "{err}");
     }
 

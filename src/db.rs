@@ -6,7 +6,7 @@
 //! version skew between machines.
 //!
 //! One table: `projects`. It records where each project is in its life, when
-//! it got there, and where an archived one's `.7z` went — the only part that
+//! it got there, and where an archived one's archive went — the only part that
 //! cannot be re-derived from the disk.
 //!
 //! The database is a record, not the source of truth. Deleting it loses the
@@ -89,7 +89,7 @@ const MIGRATIONS: &[&str] = &[
     "#,
 ];
 
-/// Where an archived project went, and what it held. The size of the `.7z` is
+/// Where an archived project went, and what it held. The archive's size is
 /// on disk to be read; what went *into* it is only known here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveRecord {
@@ -505,7 +505,7 @@ mod tests {
     fn archiving_records_what_the_archive_cannot_say_about_itself() {
         let db = Database::open_in_memory().unwrap();
         let record = track(&db, "/code/dashboard", "dashboard");
-        db.mark_archived(record.id, &summary("/code/dashboard.7z"))
+        db.mark_archived(record.id, &summary("/code/dashboard.pArchived"))
             .unwrap();
 
         let record = db.find_project("dashboard").unwrap();
@@ -513,7 +513,7 @@ mod tests {
         assert!(record.archived_at.is_some());
 
         let archive = record.archive.expect("an archived project has an archive");
-        assert_eq!(archive.path, PathBuf::from("/code/dashboard.7z"));
+        assert_eq!(archive.path, PathBuf::from("/code/dashboard.pArchived"));
         assert_eq!(archive.bytes, 512);
         assert_eq!(archive.source_bytes, 4_096);
         assert_eq!(archive.file_count, 120);
@@ -523,7 +523,7 @@ mod tests {
     fn restoring_clears_the_archive_and_starts_the_clock() {
         let db = Database::open_in_memory().unwrap();
         let record = track(&db, "/code/dashboard", "dashboard");
-        db.mark_archived(record.id, &summary("/code/dashboard.7z"))
+        db.mark_archived(record.id, &summary("/code/dashboard.pArchived"))
             .unwrap();
 
         db.mark_restored(record.id, Path::new("/elsewhere/dashboard"))
@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(record.path, PathBuf::from("/elsewhere/dashboard"));
         assert_eq!(
             record.archive, None,
-            "the .7z is gone, so the record is too"
+            "the archive is gone, so the record is too"
         );
         assert_eq!(
             db.projects().unwrap().len(),
