@@ -43,7 +43,7 @@ pub struct Args {
     shell: Option<Shell>,
 }
 
-pub fn run(args: &Args, _ctx: &Context) -> Result<()> {
+pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     let shell = match args.shell {
         Some(shell) => shell,
         // `$SHELL` is not set under PowerShell, and is the *login* shell rather
@@ -58,6 +58,16 @@ pub fn run(args: &Args, _ctx: &Context) -> Result<()> {
     };
 
     let script = generate(shell);
+
+    // The script is the output here, so `--json` wraps it rather than
+    // describing it: `pmanager completions bash --json | jq -r .script` is the
+    // same bytes the bare command writes.
+    if ctx.is_json() {
+        return crate::json::emit(&crate::json::Completions {
+            shell: shell.to_string(),
+            script: String::from_utf8_lossy(&script).into_owned(),
+        });
+    }
 
     // Buffered rather than written through clap_complete, which panics on a
     // write error. `pmanager completions bash | head` should end quietly, the

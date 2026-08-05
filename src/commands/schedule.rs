@@ -81,7 +81,7 @@ fn install(ctx: &Context, at: &str, name: &str, force: bool) -> Result<()> {
         "/TN".to_string(),
         name.to_string(),
         "/TR".to_string(),
-        command,
+        command.clone(),
         "/SC".to_string(),
         "DAILY".to_string(),
         "/ST".to_string(),
@@ -92,6 +92,15 @@ fn install(ctx: &Context, at: &str, name: &str, force: bool) -> Result<()> {
     }
 
     schtasks(&arguments)?;
+
+    if ctx.is_json() {
+        return crate::json::emit(&crate::json::Scheduled {
+            task: name.to_string(),
+            at: at.to_string(),
+            executable: crate::json::path(&exe),
+            command,
+        });
+    }
 
     if !ctx.is_quiet() {
         let mut out = std::io::stdout().lock();
@@ -110,6 +119,13 @@ fn uninstall(ctx: &Context, name: &str) -> Result<()> {
         "/F".to_string(),
     ])?;
 
+    if ctx.is_json() {
+        return crate::json::emit(&crate::json::Unscheduled {
+            task: name.to_string(),
+            removed: true,
+        });
+    }
+
     if !ctx.is_quiet() {
         writeln!(std::io::stdout().lock(), "removed `{name}`")?;
     }
@@ -125,6 +141,10 @@ fn status(ctx: &Context, name: &str) -> Result<()> {
         "/FO".to_string(),
         "LIST".to_string(),
     ])?;
+
+    if ctx.is_json() {
+        return crate::json::emit(&crate::json::ScheduleStatus::new(name, output));
+    }
 
     if !ctx.is_quiet() {
         std::io::stdout().lock().write_all(output.as_bytes())?;
