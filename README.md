@@ -240,7 +240,10 @@ deletion.
 
 One project failing does not stop the others: an unplugged drive is reported,
 the remaining projects are still swept, and the run ends with a non-zero exit
-code so a failed scheduled run is visible in Task Scheduler's history.
+code so a failed scheduled run is visible in Task Scheduler's history. That
+holds even when the failure is a crash inside the compression library rather
+than an error it reported — compression runs in-process, so a panic there is
+caught, the half-written archive is deleted, and the sweep goes on.
 
 ### Unfinished work is held back, for eight months
 
