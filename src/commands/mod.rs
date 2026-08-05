@@ -47,6 +47,19 @@ impl Context {
         self.globals.quiet
     }
 
+    /// Whether the command should print one JSON document instead of prose.
+    pub fn is_json(&self) -> bool {
+        self.globals.json
+    }
+
+    /// Whether the human-readable output should be printed at all.
+    ///
+    /// `--quiet` silences it and `--json` replaces it, so every `writeln!` of
+    /// prose is guarded by this rather than by either flag alone.
+    pub fn prints_text(&self) -> bool {
+        !self.globals.quiet && !self.globals.json
+    }
+
     /// The loaded configuration, read from disk on first call.
     pub fn config(&self) -> Result<&Config> {
         self.load().map(|(config, _)| config)

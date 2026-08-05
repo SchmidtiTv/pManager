@@ -960,3 +960,257 @@ fn scheduling_off_windows_explains_itself() {
         .failure()
         .stderr(predicate::str::contains("Task Scheduler"));
 }
+
+// ── JSON output ──────────────────────────────────────────────────────────────
+
+/// Run a command with `--json` and parse the whole of stdout as one document.
+/// Parsing all of stdout is the point: prose mixed in would fail here.
+fn json_document(config: &Path, args: &[&str]) -> serde_json::Value {
+    let output = pmanager()
+        .args(args)
+        .args(["--config"])
+        .arg(config)
+        .arg("--json")
+        .output()
+        .expect("the binary runs");
+
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "`{}` did not print one JSON document: {err}\nstdout: {}\nstderr: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+#[test]
+fn every_command_answers_in_json() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "api", 90);
+    track(&config, &path);
+
+    // `schedule` is the one exception, and only because it needs Windows;
+    // when it fails it fails as JSON too, which is tested below.
+    assert!(json_document(&config, &["list"])["projects"].is_array());
+    assert!(json_document(&config, &["run"])["totals"].is_object());
+    assert!(json_document(&config, &["info", "api"])["next_run"].is_object());
+    assert!(json_document(&config, &["project", "prune"])["projects"].is_array());
+    assert!(json_document(&config, &["completions", "bash"])["script"].is_string());
+
+    // These two change the registry, so they go last.
+    let added = json_document(&config, &["project", "add", path.to_str().unwrap()]);
+    assert_eq!(added["projects"][0]["name"], "api");
+    assert_eq!(
+        added["projects"][0]["added"], false,
+        "it was already tracked"
+    );
+
+    let removed = json_document(&config, &["project", "remove", "api"]);
+    assert_eq!(removed["projects"][0]["name"], "api");
+}
+
+#[test]
+fn a_listing_is_data_rather_than_a_table() {
+    let (dir, config) = isolated();
+    track(&config, &project(dir.path(), "api", 90));
+
+    let listing = json_document(&config, &["list"]);
+    let project = &listing["projects"][0];
+
+    assert_eq!(project["name"], "api");
+    assert_eq!(project["state"], "active");
+    assert_eq!(project["stale"], true);
+    // Sizes are bytes, not `4.0 KiB`.
+    assert_eq!(project["reclaimable_bytes"], 4096);
+    // Times carry both forms.
+    assert_eq!(project["edited"]["ago"], "3mo ago");
+    assert!(project["edited"]["epoch"].as_i64().unwrap() > 1_700_000_000);
+    // A project with no git is `repo: false`, not a missing key.
+    assert_eq!(project["git"]["repo"], false);
+    assert_eq!(listing["summary"]["tracked"], 1);
+    assert_eq!(listing["summary"]["reclaimable_bytes"], 4096);
+}
+
+#[test]
+fn nothing_tracked_is_an_empty_list_rather_than_a_sentence() {
+    let (_dir, config) = isolated();
+
+    let listing = json_document(&config, &["list"]);
+    assert!(listing["projects"].as_array().unwrap().is_empty());
+    assert_eq!(listing["summary"]["tracked"], 0);
+
+    let run = json_document(&config, &["run"]);
+    assert!(run["projects"].as_array().unwrap().is_empty());
+    assert_eq!(run["applied"], false);
+}
+
+#[test]
+fn a_plan_and_the_run_that_carries_it_out_are_told_apart() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "api", 90);
+    track(&config, &path);
+
+    let planned = json_document(&config, &["run"]);
+    assert_eq!(planned["applied"], false);
+    assert_eq!(planned["projects"][0]["action"], "trim");
+    assert_eq!(planned["projects"][0]["changed"], false);
+    assert_eq!(planned["totals"]["planned"], 1);
+    assert!(path.join("node_modules").is_dir(), "a plan changes nothing");
+
+    let applied = json_document(&config, &["run", "--yes"]);
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["projects"][0]["changed"], true);
+    assert_eq!(applied["projects"][0]["freed_bytes"], 4096);
+    assert_eq!(applied["totals"]["trimmed"], 1);
+    assert!(!path.join("node_modules").exists());
+}
+
+#[test]
+fn an_archive_and_its_restore_are_reported_as_data() {
+    let (dir, config) = isolated();
+    track(&config, &project(dir.path(), "scratch", 400));
+
+    let run = json_document(&config, &["run", "--yes"]);
+    let archived = &run["projects"][0];
+    assert_eq!(archived["action"], "archive");
+    assert_eq!(archived["changed"], true);
+    assert!(archived["archive"]["file_count"].as_u64().unwrap() > 0);
+    assert_eq!(archived["archive"]["present"], true);
+    assert_eq!(run["totals"]["archived"], 1);
+
+    let restored = json_document(&config, &["restore", "scratch", "--no-install"]);
+    assert_eq!(restored["name"], "scratch");
+    assert_eq!(restored["installed"], false);
+    assert_eq!(restored["install_command"], serde_json::Value::Null);
+    // The archive is kept unless asked otherwise, which the document says.
+    assert_eq!(restored["archive"]["deleted"], false);
+    assert!(Path::new(restored["restored_to"].as_str().unwrap()).is_dir());
+}
+
+#[test]
+fn info_reports_the_toolchain_and_what_it_would_delete() {
+    let (dir, config) = isolated();
+
+    // A Gradle project, so the toolchain and the trees both have something to
+    // say beyond Node's single `node_modules`.
+    let path = dir.path().join("fieldbook");
+    std::fs::create_dir_all(path.join("app/build")).unwrap();
+    std::fs::write(
+        path.join("settings.gradle.kts"),
+        "rootProject.name = \"app\"",
+    )
+    .unwrap();
+    std::fs::write(path.join("app/build/app.apk"), "x".repeat(2048)).unwrap();
+    track(&config, &path);
+
+    let info = json_document(&config, &["info", "app"]);
+    assert_eq!(info["toolchains"][0], "Gradle");
+    assert_eq!(info["dependencies"]["bytes"], 2048);
+    assert_eq!(info["dependencies"]["trees"][0]["path"], "app/build");
+    assert_eq!(info["dependencies"]["trees"][0]["files"], 1);
+    assert_eq!(info["present"], true);
+    assert_eq!(info["archive"], serde_json::Value::Null);
+}
+
+#[test]
+fn the_json_description_is_the_line_the_terminal_would_have_printed() {
+    let (dir, config) = isolated();
+    track(&config, &project(dir.path(), "api", 90));
+
+    let planned = json_document(&config, &["run"]);
+    let description = planned["projects"][0]["description"].as_str().unwrap();
+
+    // The same sweep without the flag says exactly this about the project, so
+    // the two renderings cannot drift apart.
+    pmanager()
+        .args(["run", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(description));
+}
+
+#[test]
+fn the_completion_script_survives_being_wrapped() {
+    let (_dir, config) = isolated();
+
+    let wrapped = json_document(&config, &["completions", "bash"]);
+    let plain = pmanager()
+        .args(["completions", "bash"])
+        .output()
+        .expect("the binary runs")
+        .stdout;
+
+    assert_eq!(
+        wrapped["script"].as_str().unwrap(),
+        String::from_utf8(plain).expect("scripts are UTF-8")
+    );
+}
+
+#[test]
+fn a_failure_is_reported_as_json_on_stderr() {
+    let (_dir, config) = isolated();
+
+    let output = pmanager()
+        .args(["info", "ghost", "--json", "--config"])
+        .arg(&config)
+        .output()
+        .expect("the binary runs");
+
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "the exit code still says why"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "stdout carries documents, not errors"
+    );
+
+    let reported: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("stderr is one JSON document");
+    assert_eq!(reported["error"]["kind"], "not_found");
+    assert_eq!(reported["error"]["exit_code"], 4);
+    assert!(
+        reported["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ghost")
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn even_the_windows_only_command_fails_in_json() {
+    let (_dir, config) = isolated();
+
+    let output = pmanager()
+        .args(["schedule", "status", "--json", "--config"])
+        .arg(&config)
+        .output()
+        .expect("the binary runs");
+
+    let reported: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("stderr is one JSON document");
+    assert!(
+        reported["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Task Scheduler")
+    );
+}
+
+#[test]
+fn json_and_quiet_are_refused_together() {
+    let (_dir, config) = isolated();
+
+    // Silencing the only thing the command was asked to print would leave
+    // nothing to parse, so it is a usage error rather than an empty stdout.
+    pmanager()
+        .args(["list", "--json", "--quiet", "--config"])
+        .arg(&config)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--quiet"));
+}

@@ -78,9 +78,81 @@ These are accepted before or after the subcommand.
 | --- | --- |
 | `-v`, `--verbose` | Increase logging verbosity; repeat for more (`-vv`, `-vvv`) |
 | `-q`, `--quiet` | Silence everything except errors |
+| `--json` | Print one JSON document instead of the human-readable output |
 | `-c`, `--config <FILE>` | Use a specific configuration file |
 | `--color <auto\|always\|never>` | Control colored output |
 | `-h`, `--help` / `-V`, `--version` | Help and version |
+
+### JSON output
+
+`--json` works on every command. It replaces that command's output with one
+JSON document on stdout and nothing else, so the whole of stdout parses:
+
+```sh
+pmanager list --json | jq -r '.projects[] | select(.stale) | .name'
+pmanager run --json | jq '[.projects[] | select(.action == "trim")] | length'
+pmanager info api-server --json | jq .next_run.action
+```
+
+```json
+{
+  "projects": [
+    {
+      "name": "old-dashboard",
+      "path": "C:\\Code\\old-dashboard",
+      "state": "active",
+      "present": true,
+      "edited": { "epoch": 1751130000, "ago": "3mo ago" },
+      "committed": { "epoch": 1751130000, "ago": "3mo ago" },
+      "stale": true,
+      "reclaimable_bytes": 933232640,
+      "archive": null,
+      "git": { "repo": true, "branch": "main", "ahead": 0, "dirty": false, "…": "…" },
+      "notes": ["890.0 MiB to reclaim", "stale >60d"]
+    }
+  ],
+  "summary": { "tracked": 4, "shown": 1, "active": 2, "…": "…" }
+}
+```
+
+The rules the schema keeps to, so that parsing one document teaches you how to
+parse the rest:
+
+- **Keys are always present.** A value that does not apply is `null` or an
+  empty list, never a missing key.
+- **Sizes are bytes**, as numbers. `890.0 MiB` is a rendering, not a value.
+- **Times are unix seconds**, alongside the same `3mo ago` phrasing the tables
+  print: machines read `epoch`, people read `ago`.
+- **Nothing found is an empty list**, not a sentence. `list` with no projects
+  is `"projects": []`, so there is no special case to write.
+- **A tagged action carries its sentence.** `action` is a stable slug —
+  `trim`, `archive`, `held_back`, `revive`, `missing`, `nothing` — and
+  `description` is the wording the human output would have used.
+
+Errors are JSON too, on stderr, leaving stdout empty rather than handing a
+parser an error object where a listing was promised. The exit code still says
+why on its own:
+
+```console
+$ pmanager info ghost --json; echo "exit $?"
+{
+  "error": {
+    "message": "project `ghost` not found",
+    "kind": "not_found",
+    "exit_code": 4,
+    "causes": []
+  }
+}
+exit 4
+```
+
+The one thing `--json` cannot cover is a usage error: `--json` is not known
+until the arguments parse, so clap's own diagnostics stay plain text on
+stderr with exit code 2.
+
+`--json` and `--quiet` are refused together — silencing the only thing the
+command was asked to print would leave nothing to parse. `src/json.rs` holds
+the whole schema, one struct per document.
 
 ### Environment
 
@@ -600,6 +672,7 @@ src/
   archive.rs          .pArchived (7z) creation, verification and extraction
   db.rs               SQLite connection, migrations and queries
   config.rs           config file discovery, parsing and defaults
+  json.rs             the `--json` schema: one struct per document
   error.rs            error type and its exit-code mapping
   logging.rs          tracing subscriber setup (stderr)
   commands/
@@ -632,7 +705,10 @@ future front-end can drive it without a process boundary.
    `src/lib.rs`.
 
 Write output to stdout and diagnostics to stderr via `tracing`, so that piping
-stdout stays useful.
+stdout stays useful. Guard every line of prose with `ctx.prints_text()` rather
+than `ctx.is_quiet()`, add a document struct to `src/json.rs`, and emit it with
+`json::emit` when `ctx.is_json()` — a command that skips that step silently
+prints a table where a caller asked for data.
 
 ## Development
 
