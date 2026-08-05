@@ -18,6 +18,7 @@ Getting started:
   pmanager run --yes                     Carry it out
   pmanager schedule install              …every day at 03:00
   pmanager completions --help            Complete commands as you type them
+  pmanager list --json                   The same, as data for a script
 
 How a project ages:
   active   ──60 days idle──▶  trimmed   dependencies deleted; a reinstall undoes it
@@ -29,8 +30,9 @@ How a project ages:
   only until 240 days idle; past that it is archived anyway, history and all.
 
   What trimming deletes follows the project: node_modules for Node, target for
-  Rust, .venv and __pycache__ for Python, vendor for Go. A project with no
-  recognised manifest has nothing deleted.
+  Rust, .venv and __pycache__ for Python, vendor for Go, build and .gradle for
+  Java, Kotlin and Android. A project with no recognised manifest has nothing
+  deleted.
 
 Configuration (optional; every key has a default):
   Windows           %APPDATA%\\pmanager\\config.toml
@@ -79,6 +81,13 @@ pub struct GlobalArgs {
     /// Silence all output except errors
     #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
+
+    /// Print one JSON document instead of the human-readable output
+    ///
+    /// Conflicts with --quiet: silencing the only thing the command was asked
+    /// to print would leave nothing to parse.
+    #[arg(long, global = true, conflicts_with = "quiet")]
+    pub json: bool,
 
     /// Path to the configuration file
     #[arg(
@@ -204,6 +213,37 @@ mod tests {
     #[test]
     fn verbose_and_quiet_conflict() {
         assert!(Cli::try_parse_from(["pmanager", "-v", "-q", "list"]).is_err());
+    }
+
+    #[test]
+    fn json_is_accepted_by_every_subcommand() {
+        let invocations: &[&[&str]] = &[
+            &["run"],
+            &["list"],
+            &["info", "api"],
+            &["project", "prune"],
+            &["project", "add", "."],
+            &["restore", "api"],
+            &["schedule", "status"],
+            &["completions", "bash"],
+        ];
+
+        for invocation in invocations {
+            let mut args = vec!["pmanager"];
+            args.extend_from_slice(invocation);
+            args.push("--json");
+
+            let cli = Cli::try_parse_from(&args).unwrap_or_else(|err| {
+                panic!("`{}` should take --json: {err}", invocation.join(" "))
+            });
+            assert!(cli.globals.json);
+        }
+    }
+
+    #[test]
+    fn json_and_quiet_conflict() {
+        // Silencing the document would leave nothing to parse.
+        assert!(Cli::try_parse_from(["pmanager", "list", "--json", "-q"]).is_err());
     }
 
     #[test]

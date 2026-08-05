@@ -187,6 +187,19 @@ pub enum Action {
 }
 
 impl Action {
+    /// A stable slug naming this action, as `--json` reports it. Kept beside
+    /// the enum so a new variant cannot be added without spelling one.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Action::Nothing { .. } => "nothing",
+            Action::Trim { .. } => "trim",
+            Action::Archive { .. } => "archive",
+            Action::HeldBack { .. } => "held_back",
+            Action::Revive => "revive",
+            Action::Missing => "missing",
+        }
+    }
+
     /// Whether carrying this out would change anything on disk or in the
     /// database. Used to decide whether a project is worth a line of output.
     pub fn is_change(&self) -> bool {

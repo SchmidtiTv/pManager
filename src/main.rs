@@ -14,6 +14,10 @@ fn main() -> ExitCode {
 
     logging::init(&cli.globals);
 
+    // Read before the command consumes the parsed arguments: a failure has to
+    // be reported in the shape the caller asked for.
+    let json = cli.globals.json;
+
     match pmanager::run(cli) {
         Ok(()) => ExitCode::from(exit::SUCCESS),
         // `pmanager list | head -1` closes stdout early; that is the
@@ -21,6 +25,7 @@ fn main() -> ExitCode {
         Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::BrokenPipe => {
             ExitCode::from(exit::SUCCESS)
         }
+        Err(err) if json => err.report_json(),
         Err(err) => err.report(),
     }
 }

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use crate::archive::{self, human_bytes};
 use crate::commands::Context;
 use crate::error::{Error, Result};
+use crate::json;
 use crate::lifecycle::State;
 
 #[derive(Debug, clap::Args)]
@@ -71,7 +72,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     std::fs::create_dir_all(&into)?;
 
     let mut out = std::io::stdout().lock();
-    if !ctx.is_quiet() {
+    if ctx.prints_text() {
         writeln!(
             out,
             "restoring {} from {} ({})",
@@ -87,18 +88,27 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     // claiming the project is still archived when the folder is right there.
     db.mark_restored(record.id, &restored)?;
 
-    if !ctx.is_quiet() {
+    if ctx.prints_text() {
         writeln!(out, "  extracted to {}", restored.display())?;
     }
 
-    let installed = install(ctx, &restored, args.no_install, &mut out)?;
+    // Resolved here rather than inside `install` so that the document can
+    // report which command ran, or that none applied.
+    let command = match args.no_install {
+        true => None,
+        false => ctx.config()?.install_command(&restored),
+    };
+    let installed = match &command {
+        Some(command) => install(ctx, &restored, command, &mut out)?,
+        None => false,
+    };
 
     if args.delete_archive {
         std::fs::remove_file(&archive_record.path)?;
-        if !ctx.is_quiet() {
+        if ctx.prints_text() {
             writeln!(out, "  deleted {}", archive_record.path.display())?;
         }
-    } else if !ctx.is_quiet() {
+    } else if ctx.prints_text() {
         writeln!(
             out,
             "  archive kept at {}; delete it once you are happy",
@@ -106,7 +116,22 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
         )?;
     }
 
-    if !ctx.is_quiet() {
+    if ctx.is_json() {
+        return json::emit(&json::Restored {
+            name: record.name.clone(),
+            path: json::path(&record.path),
+            restored_to: json::path(&restored),
+            archive: json::RestoredArchive {
+                path: json::path(&archive_record.path),
+                bytes: archive_record.bytes,
+                deleted: args.delete_archive,
+            },
+            installed,
+            install_command: command,
+        });
+    }
+
+    if ctx.prints_text() {
         writeln!(
             out,
             "\n{} is active again{}",
@@ -122,20 +147,16 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-/// Reinstall dependencies, if a command applies. A failure is reported but does
-/// not fail the restore — the project is already back, and the install is
-/// trivially re-run by hand.
-fn install(ctx: &Context, project: &Path, skip: bool, out: &mut impl Write) -> Result<bool> {
-    if skip {
-        return Ok(false);
-    }
-
-    let Some(command) = ctx.config()?.install_command(project) else {
-        return Ok(false);
-    };
-
+/// Reinstall dependencies. A failure is reported but does not fail the restore
+/// — the project is already back, and the install is trivially re-run by hand.
+fn install(
+    ctx: &Context,
+    project: &Path,
+    command: &[String],
+    out: &mut impl Write,
+) -> Result<bool> {
     let (program, arguments) = command.split_first().expect("never configured empty");
-    if !ctx.is_quiet() {
+    if ctx.prints_text() {
         writeln!(out, "  running {}", command.join(" "))?;
     }
 
@@ -144,14 +165,16 @@ fn install(ctx: &Context, project: &Path, skip: bool, out: &mut impl Write) -> R
         .current_dir(project)
         .status();
 
+    // A failed install is a diagnostic, so it goes to stderr: `--quiet` lets
+    // errors through, and under `--json` stdout carries the document alone.
     match status {
         Ok(status) if status.success() => Ok(true),
         Ok(status) => {
-            writeln!(out, "  {} exited with {status}", command.join(" "))?;
+            eprintln!("  {} exited with {status}", command.join(" "));
             Ok(false)
         }
         Err(err) => {
-            writeln!(out, "  could not run {program}: {err}")?;
+            eprintln!("  could not run {program}: {err}");
             Ok(false)
         }
     }

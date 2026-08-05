@@ -14,6 +14,7 @@ use crate::archive::{self, human_bytes};
 use crate::commands::Context;
 use crate::db::{Database, ProjectRecord};
 use crate::error::{Error, Result};
+use crate::json;
 use crate::lifecycle::{self, Action, Policy, Survey, Thresholds};
 use crate::scan;
 
@@ -73,6 +74,45 @@ pub struct Args {
     threads: Option<u32>,
 }
 
+/// What one sweep did, as `--json` reports it. Collected as the sweep goes and
+/// emitted at the end: a JSON document cannot be streamed a project at a time
+/// the way the printed lines are.
+#[derive(Debug, Default)]
+struct Collected {
+    projects: Vec<json::RunProject>,
+}
+
+impl Collected {
+    /// Record one project's outcome. `changed` says whether anything actually
+    /// happened, which a plan and an excluded project both answer no to.
+    fn push(&mut self, record: &ProjectRecord, survey: &Survey, action: &Action, line: &Outcome) {
+        self.projects.push(json::RunProject {
+            name: record.name.clone(),
+            path: json::path(&record.path),
+            action: json::NextRun::new(action, line.description.clone()),
+            changed: line.changed,
+            last_edit: survey
+                .last_edit
+                .as_ref()
+                .map(|edit| json::Time::at(edit.at)),
+            freed_bytes: line.freed,
+            archive: line.archive.clone(),
+            error: line.error.clone(),
+        });
+    }
+}
+
+/// What became of one project: the sentence the printed output uses, plus what
+/// a caller would want to branch on.
+#[derive(Debug, Default)]
+struct Outcome {
+    description: String,
+    changed: bool,
+    freed: u64,
+    archive: Option<json::Archive>,
+    error: Option<String>,
+}
+
 /// Running totals across one sweep.
 #[derive(Debug, Default)]
 struct Totals {
@@ -92,6 +132,22 @@ struct Totals {
     untouched: u64,
     failed: u64,
     freed: u64,
+}
+
+impl Totals {
+    fn as_json(&self) -> json::RunTotals {
+        json::RunTotals {
+            trimmed: self.trimmed,
+            archived: self.archived,
+            revived: self.revived,
+            planned: self.planned,
+            held_back: self.held,
+            missing: self.missing,
+            untouched: self.untouched,
+            failed: self.failed,
+            freed_bytes: self.freed,
+        }
+    }
 }
 
 pub fn run(args: &Args, ctx: &Context) -> Result<()> {
@@ -139,6 +195,13 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
 
     let projects = targets(args, &db)?;
     if projects.is_empty() {
+        if ctx.is_json() {
+            return json::emit(&json::RunReport {
+                applied: args.yes,
+                projects: Vec::new(),
+                totals: Totals::default().as_json(),
+            });
+        }
         if !ctx.is_quiet() {
             let mut out = std::io::stdout().lock();
             writeln!(out, "no projects tracked yet")?;
@@ -148,6 +211,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     }
 
     let mut totals = Totals::default();
+    let mut collected = Collected::default();
 
     for record in &projects {
         // Resolved per project: which directories are rebuildable depends on
@@ -165,7 +229,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
             overwrite: args.force,
         };
 
-        if let Err(err) = visit(
+        let outcome = match visit(
             ctx,
             &db,
             record,
@@ -176,14 +240,34 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
             thresholds,
             &mut totals,
         ) {
-            // Report and carry on: the next project may be perfectly healthy.
-            tracing::error!(project = %record.path.display(), error = %err, "failed");
-            eprintln!("error: {}: {err}", record.name);
-            totals.failed += 1;
-        }
+            Ok(outcome) => outcome,
+            Err(err) => {
+                // Report and carry on: the next project may be perfectly
+                // healthy. Errors go to stderr even under `--quiet`, and the
+                // document below carries them too.
+                tracing::error!(project = %record.path.display(), error = %err, "failed");
+                eprintln!("error: {}: {err}", record.name);
+                totals.failed += 1;
+                Outcome {
+                    description: err.to_string(),
+                    error: Some(err.to_string()),
+                    ..Outcome::default()
+                }
+            }
+        };
+
+        collected.push(record, &survey, &action, &outcome);
     }
 
-    report(ctx, &totals, args)?;
+    if ctx.is_json() {
+        json::emit(&json::RunReport {
+            applied: args.yes,
+            projects: collected.projects,
+            totals: totals.as_json(),
+        })?;
+    } else {
+        report(ctx, &totals, args)?;
+    }
 
     if totals.failed > 0 {
         return Err(Error::Archive(format!(
@@ -209,6 +293,9 @@ fn targets(args: &Args, db: &Database) -> Result<Vec<ProjectRecord>> {
 }
 
 /// Carry out — or merely describe — one project's action.
+///
+/// Returns what became of it. The sentence in there is the one the printed
+/// line uses, so `--json`'s `description` and the terminal cannot drift apart.
 #[allow(clippy::too_many_arguments)]
 fn visit(
     ctx: &Context,
@@ -220,9 +307,11 @@ fn visit(
     options: &archive::Options,
     thresholds: Thresholds,
     totals: &mut Totals,
-) -> Result<()> {
-    let quiet = ctx.is_quiet();
+) -> Result<Outcome> {
     let mut out = std::io::stdout().lock();
+    // Supplementary lines: printed under the project's own, and folded into
+    // the outcome's `error` so nothing is visible only in the terminal.
+    let mut notes: Vec<String> = Vec::new();
 
     // These narrow what a run may do without changing how a project is judged.
     let suppressed = match action {
@@ -233,143 +322,126 @@ fn visit(
 
     if suppressed || !action.is_change() {
         totals.untouched += 1;
-        if args.all && !quiet {
-            let reason = match action {
-                _ if suppressed => "excluded by this run's flags".to_string(),
-                Action::Nothing { reason } => reason.clone(),
-                _ => String::new(),
-            };
-            writeln!(out, "{}  {}", label(record, survey), reason)?;
+        let reason = match action {
+            _ if suppressed => "excluded by this run's flags".to_string(),
+            Action::Nothing { reason } => reason.clone(),
+            _ => String::new(),
+        };
+        if args.all && ctx.prints_text() {
+            writeln!(out, "{}  {reason}", label(record, survey))?;
         }
-        return Ok(());
+        return Ok(Outcome {
+            description: reason,
+            ..Outcome::default()
+        });
     }
 
-    match action {
+    let mut outcome = Outcome::default();
+    let mut failure = None;
+
+    outcome.description = match action {
         Action::Missing => {
             totals.missing += 1;
-            if !quiet {
-                writeln!(
-                    out,
-                    "{}  folder is gone; `pmanager project prune` clears it out",
-                    label(record, survey)
-                )?;
-            }
+            "folder is gone; `pmanager project prune` clears it out".to_string()
         }
 
         Action::HeldBack { reason } => {
             totals.held += 1;
-            if !quiet {
-                // Saying when the hold lapses turns "held back" from a state
-                // the project might sit in forever into a deadline.
-                let lapses = match survey.idle_days_from(record.active_since()) {
-                    Some(idle) => format!(
-                        "; archived regardless in {} day(s)",
-                        u64::from(thresholds.force_archive_days).saturating_sub(idle)
-                    ),
-                    None => String::new(),
-                };
-                writeln!(
-                    out,
-                    "{}  old enough to archive, held back: {reason}{lapses}",
-                    label(record, survey)
-                )?;
-            }
+            // Saying when the hold lapses turns "held back" from a state
+            // the project might sit in forever into a deadline.
+            let lapses = match survey.idle_days_from(record.active_since()) {
+                Some(idle) => format!(
+                    "; archived regardless in {} day(s)",
+                    u64::from(thresholds.force_archive_days).saturating_sub(idle)
+                ),
+                None => String::new(),
+            };
+            format!("old enough to archive, held back: {reason}{lapses}")
         }
 
         Action::Revive => {
             if args.yes {
                 totals.revived += 1;
+                outcome.changed = true;
                 db.mark_active(record.id)?;
             } else {
                 totals.planned += 1;
             }
-            if !quiet {
-                writeln!(
-                    out,
-                    "{}  worked on again; {} active",
-                    label(record, survey),
-                    if args.yes { "marked" } else { "would mark" }
-                )?;
-            }
+            format!(
+                "worked on again; {} active",
+                if args.yes { "marked" } else { "would mark" }
+            )
         }
 
         Action::Trim { dirs } => {
-            let size = human_bytes(scan::total_bytes(dirs));
             let count = dirs.len();
 
-            if !args.yes {
-                totals.planned += 1;
-                if !quiet {
-                    writeln!(
-                        out,
-                        "{}  would trim {count} dependency tree(s), freeing {size}",
-                        label(record, survey)
-                    )?;
+            if args.yes {
+                let result = lifecycle::trim(dirs);
+                totals.freed += result.freed;
+                outcome.freed = result.freed;
+
+                // A partial trim still counts; the survivors are found again
+                // on the next run.
+                if result.removed > 0 {
+                    totals.trimmed += 1;
+                    outcome.changed = true;
+                    db.mark_trimmed(record.id, result.freed)?;
                 }
-                return Ok(());
-            }
 
-            let result = lifecycle::trim(dirs);
-            totals.freed += result.freed;
+                for (path, err) in &result.failed {
+                    notes.push(format!("could not remove {}: {err}", path.display()));
+                }
+                if result.removed == 0 {
+                    failure = Some(Error::Io(std::io::Error::other(format!(
+                        "none of the {count} dependency tree(s) could be removed"
+                    ))));
+                }
 
-            // A partial trim still counts; the survivors are found again next run.
-            if result.removed > 0 {
-                totals.trimmed += 1;
-                db.mark_trimmed(record.id, result.freed)?;
-            }
-
-            if !quiet {
-                writeln!(
-                    out,
-                    "{}  trimmed {} dependency tree(s), freed {}",
-                    label(record, survey),
+                format!(
+                    "trimmed {} dependency tree(s), freed {}",
                     result.removed,
                     human_bytes(result.freed)
-                )?;
-                for (path, err) in &result.failed {
-                    writeln!(out, "    could not remove {}: {err}", path.display())?;
-                }
-            }
-
-            if result.removed == 0 {
-                return Err(Error::Io(std::io::Error::other(format!(
-                    "none of the {count} dependency tree(s) could be removed"
-                ))));
+                )
+            } else {
+                totals.planned += 1;
+                format!(
+                    "would trim {count} dependency tree(s), freeing {}",
+                    human_bytes(scan::total_bytes(dirs))
+                )
             }
         }
 
         Action::Archive { destination } => {
             if !args.yes {
                 totals.planned += 1;
-                if !quiet {
-                    writeln!(
-                        out,
-                        "{}  would archive to {}",
-                        label(record, survey),
-                        destination.display()
-                    )?;
-                }
-                return Ok(());
-            }
-
-            let summary = lifecycle::archive(&record.path, destination, options, args.keep_source)?;
-            totals.archived += 1;
-
-            // Only a deleted folder gives anything back.
-            let freed = if args.keep_source {
-                0
+                format!("would archive to {}", destination.display())
             } else {
-                summary.source_bytes.saturating_sub(summary.archive_bytes)
-            };
-            totals.freed += freed;
+                let summary =
+                    lifecycle::archive(&record.path, destination, options, args.keep_source)?;
+                totals.archived += 1;
+                outcome.changed = true;
 
-            db.mark_archived(record.id, &summary)?;
+                // Only a deleted folder gives anything back.
+                let freed = if args.keep_source {
+                    0
+                } else {
+                    summary.source_bytes.saturating_sub(summary.archive_bytes)
+                };
+                totals.freed += freed;
+                outcome.freed = freed;
+                outcome.archive = Some(json::Archive {
+                    path: json::path(destination),
+                    bytes: summary.archive_bytes,
+                    source_bytes: summary.source_bytes,
+                    file_count: summary.file_count,
+                    present: destination.is_file(),
+                });
 
-            if !quiet {
-                writeln!(
-                    out,
-                    "{}  archived to {}  {} file(s), {} -> {}{}",
-                    label(record, survey),
+                db.mark_archived(record.id, &summary)?;
+
+                format!(
+                    "archived to {}  {} file(s), {} -> {}{}",
                     destination.display(),
                     summary.file_count,
                     human_bytes(summary.source_bytes),
@@ -379,14 +451,29 @@ fn visit(
                     } else {
                         format!(", freed {}", human_bytes(freed))
                     }
-                )?;
+                )
             }
         }
 
         Action::Nothing { .. } => unreachable!("handled above"),
+    };
+
+    if ctx.prints_text() {
+        writeln!(out, "{}  {}", label(record, survey), outcome.description)?;
+        for note in &notes {
+            writeln!(out, "    {note}")?;
+        }
+    }
+    if !notes.is_empty() {
+        outcome.error = Some(notes.join("; "));
     }
 
-    Ok(())
+    match failure {
+        // The trees that did come out are already counted; this is what makes
+        // a run that achieved nothing exit non-zero.
+        Some(err) => Err(err),
+        None => Ok(outcome),
+    }
 }
 
 /// `name  90d ago` — the left-hand column every line starts with.
@@ -400,7 +487,7 @@ fn label(record: &ProjectRecord, survey: &Survey) -> String {
 }
 
 fn report(ctx: &Context, totals: &Totals, args: &Args) -> Result<()> {
-    if ctx.is_quiet() {
+    if !ctx.prints_text() {
         return Ok(());
     }
 
