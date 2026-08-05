@@ -34,5 +34,6 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Project(args) => commands::project::run(args, &ctx),
         Command::Restore(args) => commands::restore::run(args, &ctx),
         Command::Schedule(args) => commands::schedule::run(args, &ctx),
+        Command::Completions(args) => commands::completions::run(args, &ctx),
     }
 }

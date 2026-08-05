@@ -8,10 +8,10 @@ touched in six. Nothing is lost — the trimmed ones need an `npm install`, the
 compressed ones a `pmanager restore`.
 
 ```
-C:\Code\                before                C:\Code\               after
-  api-server\    1.2 GiB  (edited today)        api-server\   1.2 GiB
-  old-dashboard\ 890 MiB  (3 months ago)        old-dashboard\  12 MiB
-  scratch-cli\   410 MiB  (14 months ago)       scratch-cli.7z 2.1 MiB
+C:\Code\                before                C:\Code\                  after
+  api-server\    1.2 GiB  (edited today)        api-server\           1.2 GiB
+  old-dashboard\ 890 MiB  (3 months ago)        old-dashboard\         12 MiB
+  scratch-cli\   410 MiB  (14 months ago)       scratch-cli.pArchived 2.1 MiB
 ```
 
 Written in Rust, with a local SQLite database recording every project it
@@ -38,6 +38,7 @@ pmanager list                             # see them all
 pmanager run                              # see what has aged out (changes nothing)
 pmanager run --yes                        # carry it out
 pmanager schedule install                 # …every day at 03:00
+pmanager completions powershell           # complete commands as you type them
 ```
 
 ## Usage
@@ -60,6 +61,7 @@ pmanager [OPTIONS] <COMMAND>
 | `schedule install` | Register the daily run with Windows Task Scheduler |
 | `schedule uninstall` | Remove the scheduled task |
 | `schedule status` | Show the scheduled task |
+| `completions [SHELL]` | Print the shell completion script |
 
 A `<PROJECT>` is a path or the name shown by `pmanager list` — the name is how
 you reach an archived project, whose folder is not there to point at.
@@ -112,8 +114,9 @@ completely untouched: sources, config, `.git`, everything. `npm install` undoes
 it. This is where most of the disk is won, and it costs nothing but a reinstall
 you would have done anyway after six months away.
 
-**archived** — the whole project is a `.7z` and the folder is gone. `pmanager
-restore` extracts it, reinstalls its dependencies and marks it active again.
+**archived** — the whole project is a `.pArchived` and the folder is gone.
+`pmanager restore` extracts it, reinstalls its dependencies and marks it active
+again.
 
 ### What "idle" means
 
@@ -146,8 +149,8 @@ willing to delete is exactly what it refuses to store.**
 The delete is what frees the disk, so it happens last and only after the
 archive has been proven good:
 
-1. the archive is written to a fresh `.7z`, and deleted again if compression
-   fails — a `.7z` on disk is never half-written;
+1. the archive is written to a fresh `.pArchived`, and deleted again if
+   compression fails — one on disk is never half-written;
 2. it is read back and its file count compared against what was walked;
 3. only then is the project folder removed.
 
@@ -172,8 +175,8 @@ half-done            1y ago  old enough to archive, held back: 1 uncommitted cha
 ```
 
 Nothing would actually be *lost* by archiving it — the working tree and `.git`
-both go into the `.7z` — but a folder disappearing out from under work you left
-half-finished is a surprise, and that is what uncommitted changes mean.
+both go into the archive — but a folder disappearing out from under work you
+left half-finished is a surprise, and that is what uncommitted changes mean.
 `--force` overrides it. Trimming is not affected: deleting `node_modules` never
 touches your work.
 
@@ -269,7 +272,7 @@ It changes nothing without `--yes`:
 ```
 $ pmanager run
 old-dashboard        3mo ago  would trim 1 dependency tree(s), freeing 890.2 MiB
-scratch-cli           1y ago  would archive to C:\Code\scratch-cli.7z
+scratch-cli           1y ago  would archive to C:\Code\scratch-cli.pArchived
 
 2 project(s) would change
 nothing was changed; pass --yes to apply
@@ -278,7 +281,7 @@ nothing was changed; pass --yes to apply
 ```
 $ pmanager run --yes
 old-dashboard        3mo ago  trimmed 1 dependency tree(s), freed 890.2 MiB
-scratch-cli           1y ago  archived to C:\Code\scratch-cli.7z  1204 file(s), 410.0 MiB -> 2.1 MiB, freed 407.9 MiB
+scratch-cli           1y ago  archived to C:\Code\scratch-cli.pArchived  1204 file(s), 410.0 MiB -> 2.1 MiB, freed 407.9 MiB
 
 1 trimmed, 1 archived, 1.3 GiB freed
 ```
@@ -319,9 +322,16 @@ than merged into.
 moment it is unpacked, before anyone has looked at the result, would be the one
 irreversible step in a design that has none.
 
-A `.7z` written by pManager is an ordinary 7-Zip archive, so a project can also
-be recovered by hand with 7-Zip, or on any machine that has never heard of
-pManager. The folder name is stored inside it.
+A `.pArchived` written by pManager is an ordinary 7-Zip archive under another
+name — the extension only marks it as pManager's. 7-Zip identifies it by its
+contents, so a project can be recovered by hand on any machine that has never
+heard of pManager; point 7-Zip at the file and it opens. The folder name is
+stored inside it.
+
+Archives written by earlier versions are named `.7z`. They keep restoring
+unchanged: `pmanager restore` uses the path recorded in the database, and
+extraction goes by the file's own signature rather than its name. There is
+nothing to migrate, and renaming an old archive by hand is unnecessary.
 
 ## Scheduling the daily run
 
@@ -348,6 +358,38 @@ it again. An explicit `--config` is carried into the task.
 On non-Windows platforms these commands report that Task Scheduler is not
 available; run `pmanager run --yes` from cron or a systemd timer instead.
 
+## Shell completions
+
+`pmanager completions <SHELL>` writes a completion script to stdout. Put it
+where your shell looks for one:
+
+```powershell
+pmanager completions powershell >> $PROFILE
+```
+
+```sh
+pmanager completions bash > ~/.local/share/bash-completion/completions/pmanager
+pmanager completions zsh  > ~/.zfunc/_pmanager     # ~/.zfunc on $fpath
+pmanager completions fish > ~/.config/fish/completions/pmanager.fish
+pmanager completions elvish >> ~/.config/elvish/rc.elv
+```
+
+Then start a new shell: these files are read once, at startup. To try it
+without installing anything, `eval "$(pmanager completions bash)"`.
+
+Omit the shell and it is guessed from the environment — handy in a profile
+that is shared between machines, though `$SHELL` is the login shell rather
+than the current one and is not set at all under PowerShell, so naming the
+shell is the reliable form.
+
+The script is generated from the same command line definition the binary
+parses with, so it always covers every current subcommand, flag and value —
+including `--state`'s values and the shells listed above. It is a snapshot of
+one version, though: regenerate it after upgrading pmanager.
+
+Completions never read the configuration file or the database, so a broken
+config cannot break the shell that runs this at startup.
+
 ## Database
 
 A single SQLite file, by default `pmanager.db` inside the platform data
@@ -367,7 +409,7 @@ Connections open with WAL journaling, `foreign_keys = ON` and a 5 second busy
 timeout, so a second `pmanager` waits its turn instead of failing.
 
 One table, `projects`: where each project is in its life, when it got there,
-how much trimming has reclaimed, and — for an archived one — where the `.7z`
+how much trimming has reclaimed, and — for an archived one — where the archive
 went and what it held. That last part is the only thing stored that cannot be
 re-derived by looking at the disk, and it is what lets `list` say what
 restoring a project would cost.
@@ -443,7 +485,7 @@ src/
   scan.rs             measuring a project: last edit, purgeable size, ages
   git.rs              read-only git status via the `git` binary
   lifecycle.rs        the policy: states, thresholds, decide, trim, archive
-  archive.rs          7z creation, verification and extraction
+  archive.rs          .pArchived (7z) creation, verification and extraction
   db.rs               SQLite connection, migrations and queries
   config.rs           config file discovery, parsing and defaults
   error.rs            error type and its exit-code mapping
@@ -456,6 +498,7 @@ src/
     project.rs        `pmanager project`
     restore.rs        `pmanager restore`
     schedule.rs       `pmanager schedule`
+    completions.rs    `pmanager completions`
 tests/
   cli.rs              end-to-end tests that run the built binary
 ```
