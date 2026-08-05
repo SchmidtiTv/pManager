@@ -20,20 +20,26 @@ Getting started:
   pmanager completions --help            Complete commands as you type them
 
 How a project ages:
-  active   ──60 days idle──▶  trimmed   node_modules deleted; `npm install` undoes it
+  active   ──60 days idle──▶  trimmed   dependencies deleted; a reinstall undoes it
   trimmed  ─180 days idle──▶  archived  compressed to .pArchived, folder gone
   archived ──────────────────▶  active  `pmanager restore <PROJECT>`
 
   Idle means no edited files — dependency installs and builds do not count.
-  A project holding uncommitted or unpushed work is never archived.
+  Uncommitted or unpushed work holds a project back from being archived, but
+  only until 240 days idle; past that it is archived anyway, history and all.
+
+  What trimming deletes follows the project: node_modules for Node, target for
+  Rust, .venv and __pycache__ for Python, vendor for Go. A project with no
+  recognised manifest has nothing deleted.
 
 Configuration (optional; every key has a default):
   Windows           %APPDATA%\\pmanager\\config.toml
   Linux             ~/.config/pmanager/config.toml
   macOS             ~/Library/Application Support/pmanager/config.toml
 
-  trim_days, archive_days, purge_dirs, skip_dirs, archive_dir,
-  install_command, compression_level, compression_threads, data_dir, database
+  trim_days, archive_days, force_archive_days, purge_dirs, skip_dirs,
+  archive_dir, install_command, compression_level, compression_threads,
+  data_dir, database
 
 Environment:
   PMANAGER_CONFIG   Path to the config file (overridden by --config)
