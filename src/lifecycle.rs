@@ -7,8 +7,8 @@
 //! ```
 //!
 //! Trimmed means the dependency trees are gone and `npm install` puts them
-//! back; archived means the project is a verified `.7z` and the folder is not
-//! there any more.
+//! back; archived means the project is a verified `.pArchived` and the folder
+//! is not there any more.
 //!
 //! Filesystem only — no database, no printing, no clap — so the rules can be
 //! tested directly.
@@ -29,7 +29,7 @@ pub enum State {
     Active,
     /// Dependency trees deleted; the project itself is untouched.
     Trimmed,
-    /// Compressed to a `.7z`; the folder is gone.
+    /// Compressed to a `.pArchived`; the folder is gone.
     Archived,
 }
 
@@ -250,7 +250,7 @@ pub fn decide(
     }
 }
 
-/// Where a project's archive goes: `<name>.7z`, beside the project or in
+/// Where a project's archive goes: `<name>.pArchived`, beside the project or in
 /// `archive_dir` when one is configured.
 pub fn destination(project: &Path, archive_dir: Option<&Path>) -> PathBuf {
     let name = project
@@ -434,7 +434,7 @@ mod tests {
         let Action::Archive { destination } = decide_for(&path, State::Active) else {
             panic!("400 days idle is past the 180 day archive threshold");
         };
-        assert_eq!(destination, dir.path().join("api.7z"));
+        assert_eq!(destination, dir.path().join("api.pArchived"));
     }
 
     #[test]
@@ -537,7 +537,7 @@ mod tests {
         let Action::Archive { destination } = decide(State::Active, &survey, None, &policy) else {
             panic!("expected an archive");
         };
-        assert_eq!(destination, vault.join("api.7z"));
+        assert_eq!(destination, vault.join("api.pArchived"));
     }
 
     #[test]

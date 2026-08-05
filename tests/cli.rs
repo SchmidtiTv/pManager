@@ -112,6 +112,66 @@ fn unknown_subcommand_is_a_usage_error() {
     pmanager().arg("frobnicate").assert().code(2);
 }
 
+// ── Completions ──────────────────────────────────────────────────────────────
+
+#[test]
+fn completion_scripts_are_written_to_stdout() {
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        pmanager()
+            .args(["completions", shell])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("pmanager"));
+    }
+}
+
+#[test]
+fn the_completion_script_covers_the_subcommands() {
+    pmanager()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("restore"))
+        .stdout(predicate::str::contains("schedule"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn completions_do_not_need_a_usable_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "this is not: valid toml\n").unwrap();
+
+    // A shell profile runs this at startup; a broken config must not break the
+    // shell, and `list` next door proves the file really is unusable.
+    pmanager()
+        .args(["completions", "bash", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+
+    pmanager()
+        .args(["list", "--config"])
+        .arg(&config)
+        .assert()
+        .code(3);
+}
+
+#[test]
+fn an_unknown_shell_is_a_usage_error() {
+    pmanager().args(["completions", "tcsh"]).assert().code(2);
+}
+
+#[test]
+fn the_shell_can_be_left_to_the_environment() {
+    pmanager()
+        .arg("completions")
+        .env("SHELL", "/bin/bash")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pmanager"));
+}
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 #[test]
@@ -408,7 +468,7 @@ fn no_archive_stops_at_trimming() {
         .success();
 
     assert!(path.is_dir(), "the project should still be there");
-    assert!(!path.with_extension("7z").exists());
+    assert!(!path.with_extension("pArchived").exists());
 }
 
 // ── Archiving and restoring ──────────────────────────────────────────────────
@@ -426,7 +486,7 @@ fn a_long_abandoned_project_is_archived_and_can_be_restored() {
         .success()
         .stdout(predicate::str::contains("archived to"));
 
-    let archive = dir.path().join("dashboard.7z");
+    let archive = dir.path().join("dashboard.pArchived");
     assert!(
         archive.is_file(),
         "the archive should be beside the project"
@@ -504,7 +564,7 @@ fn keep_source_writes_the_archive_but_leaves_the_project() {
         .success()
         .stdout(predicate::str::contains("folder kept"));
 
-    assert!(dir.path().join("dashboard.7z").is_file());
+    assert!(dir.path().join("dashboard.pArchived").is_file());
     assert!(path.is_dir());
 }
 
@@ -522,8 +582,8 @@ fn archives_can_be_collected_in_one_directory() {
         .assert()
         .success();
 
-    assert!(vault.join("dashboard.7z").is_file());
-    assert!(!dir.path().join("dashboard.7z").exists());
+    assert!(vault.join("dashboard.pArchived").is_file());
+    assert!(!dir.path().join("dashboard.pArchived").exists());
 }
 
 #[test]
