@@ -18,11 +18,6 @@ use crate::error::{Error, Result};
 use crate::lifecycle::{self, Thresholds};
 use crate::scan;
 
-/// Borrow a table of built-in defaults as owned strings.
-fn owned(names: &[&str]) -> Vec<String> {
-    names.iter().map(|name| (*name).to_string()).collect()
-}
-
 /// Qualifier/organization/application triple used to locate platform
 /// directories (`~/.config/pmanager` on Linux, `%APPDATA%\pmanager` on
 /// Windows, `~/Library/Application Support/pmanager` on macOS).
@@ -52,12 +47,18 @@ pub struct Config {
     /// Defaults to [`lifecycle::DEFAULT_ARCHIVE_DAYS`].
     pub archive_days: Option<u32>,
 
+    /// Days of no edits after which uncommitted or unpushed work stops holding
+    /// a project back from being archived. Defaults to
+    /// [`lifecycle::DEFAULT_FORCE_ARCHIVE_DAYS`].
+    pub force_archive_days: Option<u32>,
+
     /// Directories that pManager deletes when trimming, and leaves out of an
-    /// archive. Defaults to [`scan::PURGE_DIRS`].
+    /// archive. Defaults to whatever each project's own toolchains can rebuild
+    /// — see [`scan::ECOSYSTEMS`].
     pub purge_dirs: Option<Vec<String>>,
 
     /// Directories not counted when looking for a project's last edit.
-    /// Defaults to [`scan::SKIP_DIRS`].
+    /// Defaults to [`scan::skip_dirs`].
     pub skip_dirs: Option<Vec<String>>,
 
     /// Where archives are written. Defaults to beside the project.
@@ -119,8 +120,11 @@ impl Config {
     ///
     /// An `archive_days` below `trim_days` is rejected rather than obeyed:
     /// with the archive test coming first, it would mean every project skips
-    /// the trim and goes straight to being compressed and deleted. That is a
-    /// typo with consequences, so it fails before anything is touched.
+    /// the trim and goes straight to being compressed and deleted. A
+    /// `force_archive_days` below `archive_days` is rejected for the same
+    /// reason from the other end: the hold on unfinished work would expire
+    /// before it ever applied, so nothing would be held back at all. Both are
+    /// typos with consequences, so they fail before anything is touched.
     ///
     /// Zero is allowed, and means "as soon as it is a day old" — unusual, but
     /// it is the only way to say it, and someone deliberately writing `0` in a
@@ -129,6 +133,9 @@ impl Config {
         let thresholds = Thresholds {
             trim_days: self.trim_days.unwrap_or(lifecycle::DEFAULT_TRIM_DAYS),
             archive_days: self.archive_days.unwrap_or(lifecycle::DEFAULT_ARCHIVE_DAYS),
+            force_archive_days: self
+                .force_archive_days
+                .unwrap_or(lifecycle::DEFAULT_FORCE_ARCHIVE_DAYS),
         };
 
         if thresholds.archive_days < thresholds.trim_days {
@@ -140,14 +147,34 @@ impl Config {
             )));
         }
 
+        if thresholds.force_archive_days < thresholds.archive_days {
+            return Err(Error::Other(anyhow::anyhow!(
+                "`force_archive_days` ({}) must be at least `archive_days` ({}); \
+                 as written, unfinished work would never hold a project back",
+                thresholds.force_archive_days,
+                thresholds.archive_days
+            )));
+        }
+
         Ok(thresholds)
     }
 
-    /// Directories deleted when trimming, and kept out of archives.
-    pub fn purge_dirs(&self) -> Vec<String> {
+    /// Directories deleted when trimming `project`, and kept out of its
+    /// archive.
+    ///
+    /// With nothing configured this is what `project`'s own toolchains can
+    /// rebuild — `node_modules` in a Node project, `target` in a Rust one — so
+    /// a machine holding several languages needs no configuration at all, and
+    /// a directory is only ever deleted where the tooling to recreate it is
+    /// sitting right there.
+    ///
+    /// An explicit `purge_dirs` turns the detection off and applies the list
+    /// as written to every project, which is the way to name something
+    /// pManager does not know about.
+    pub fn purge_dirs(&self, project: &Path) -> Vec<String> {
         self.purge_dirs
             .clone()
-            .unwrap_or_else(|| owned(scan::PURGE_DIRS))
+            .unwrap_or_else(|| scan::regenerable_dirs(project))
     }
 
     /// Directories ignored when dating a project.
@@ -155,16 +182,14 @@ impl Config {
     /// Anything pManager is willing to delete is folded in: a directory that
     /// can be thrown away cannot also be evidence that the project is alive,
     /// and a `purge_dirs` entry that someone forgot to also list here would
-    /// quietly keep every project looking fresh.
+    /// quietly keep every project looking fresh. The built-in list already
+    /// covers every ecosystem, so only a configured override needs folding.
     pub fn skip_dirs(&self) -> Vec<String> {
-        let mut dirs = self
-            .skip_dirs
-            .clone()
-            .unwrap_or_else(|| owned(scan::SKIP_DIRS));
+        let mut dirs = self.skip_dirs.clone().unwrap_or_else(scan::skip_dirs);
 
-        for dir in self.purge_dirs() {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
+        for dir in self.purge_dirs.iter().flatten() {
+            if !dirs.contains(dir) {
+                dirs.push(dir.clone());
             }
         }
         dirs
@@ -296,10 +321,16 @@ mod tests {
             loaded.thresholds().unwrap(),
             Thresholds {
                 trim_days: 30,
-                archive_days: 90
+                archive_days: 90,
+                // Left out of the file, so it keeps its default.
+                force_archive_days: lifecycle::DEFAULT_FORCE_ARCHIVE_DAYS,
             }
         );
-        assert_eq!(loaded.purge_dirs(), ["node_modules", "target"]);
+        // Configured explicitly, so it applies whatever the project is.
+        assert_eq!(
+            loaded.purge_dirs(Path::new("/anywhere")),
+            ["node_modules", "target"]
+        );
         assert_eq!(loaded.compression_level().unwrap(), 9);
         // Keys the file left out keep their defaults.
         assert_eq!(loaded.compression_threads().unwrap(), 1);
@@ -335,8 +366,32 @@ mod tests {
             Thresholds {
                 trim_days: lifecycle::DEFAULT_TRIM_DAYS,
                 archive_days: lifecycle::DEFAULT_ARCHIVE_DAYS,
+                force_archive_days: lifecycle::DEFAULT_FORCE_ARCHIVE_DAYS,
             }
         );
+    }
+
+    #[test]
+    fn the_hold_lapses_eight_months_in_by_default() {
+        assert_eq!(
+            Config::default().thresholds().unwrap().force_archive_days,
+            240,
+            "eight 30-day months"
+        );
+    }
+
+    #[test]
+    fn a_lapse_threshold_below_the_archive_one_is_refused() {
+        // The hold would expire before it could ever apply, quietly turning
+        // off the protection for unfinished work.
+        let inverted = Config {
+            archive_days: Some(180),
+            force_archive_days: Some(90),
+            ..Config::default()
+        };
+
+        let err = inverted.thresholds().unwrap_err();
+        assert!(err.to_string().contains("at least `archive_days`"), "{err}");
     }
 
     #[test]

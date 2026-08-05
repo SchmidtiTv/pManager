@@ -362,6 +362,109 @@ fn a_stale_project_has_its_dependencies_trimmed() {
 }
 
 #[test]
+fn a_project_is_trimmed_by_the_toolchain_it_is_built_with() {
+    let (dir, config) = isolated();
+
+    // A Rust project: no package.json anywhere, so the only reason `target`
+    // goes is that `Cargo.toml` is sitting beside it.
+    let path = dir.path().join("cli");
+    std::fs::create_dir_all(path.join("src")).unwrap();
+    std::fs::write(path.join("Cargo.toml"), "[package]\nname = \"cli\"\n").unwrap();
+    std::fs::write(path.join("src/main.rs"), "fn main() {}").unwrap();
+
+    let build = path.join("target/debug");
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::write(build.join("cli"), "x".repeat(8192)).unwrap();
+
+    let when = SystemTime::now() - Duration::from_secs(90 * 86_400);
+    for file in ["Cargo.toml", "src/main.rs"] {
+        std::fs::File::options()
+            .write(true)
+            .open(path.join(file))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    track(&config, &path);
+
+    pmanager()
+        .args(["info"])
+        .arg(&path)
+        .args(["--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Rust"));
+
+    pmanager()
+        .args(["run", "--yes", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trimmed 1 dependency tree(s)"));
+
+    assert!(
+        !path.join("target").exists(),
+        "the build directory should go"
+    );
+    assert!(
+        path.join("src/main.rs").is_file(),
+        "the project should stay"
+    );
+}
+
+#[test]
+fn a_project_of_no_known_toolchain_is_never_trimmed() {
+    let (dir, config) = isolated();
+
+    // A `target` with nothing to rebuild it from is somebody's own directory.
+    let path = dir.path().join("notes");
+    std::fs::create_dir_all(path.join("target")).unwrap();
+    std::fs::write(path.join("target/keep.txt"), "hand written").unwrap();
+    std::fs::write(path.join("readme.md"), "no manifest here").unwrap();
+
+    let when = SystemTime::now() - Duration::from_secs(90 * 86_400);
+    for file in ["readme.md", "target/keep.txt"] {
+        std::fs::File::options()
+            .write(true)
+            .open(path.join(file))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    track(&config, &path);
+
+    pmanager()
+        .args(["run", "--yes", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+
+    assert!(
+        path.join("target/keep.txt").is_file(),
+        "pManager cannot rebuild it, so it must not delete it"
+    );
+}
+
+#[test]
+fn a_lapse_threshold_below_the_archive_one_is_refused() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "api", 400);
+    track(&config, &path);
+
+    pmanager()
+        .args(["run", "--force-archive-days", "10", "--config"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force-archive-days"));
+
+    assert!(path.join("src/index.js").is_file(), "nothing was touched");
+}
+
+#[test]
 fn a_second_run_has_nothing_left_to_trim() {
     let (dir, config) = isolated();
     track(&config, &project(dir.path(), "api", 90));

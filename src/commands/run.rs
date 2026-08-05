@@ -35,6 +35,11 @@ pub struct Args {
     #[arg(long, value_name = "DAYS")]
     archive_days: Option<u32>,
 
+    /// Days of no edits after which unfinished work stops holding a project
+    /// back from being archived [default: 240]
+    #[arg(long, value_name = "DAYS")]
+    force_archive_days: Option<u32>,
+
     /// Only trim; never archive
     #[arg(long, conflicts_with = "no_trim")]
     no_archive: bool,
@@ -99,12 +104,22 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     let thresholds = Thresholds {
         trim_days: args.trim_days.unwrap_or(configured.trim_days),
         archive_days: args.archive_days.unwrap_or(configured.archive_days),
+        force_archive_days: args
+            .force_archive_days
+            .unwrap_or(configured.force_archive_days),
     };
     if thresholds.archive_days < thresholds.trim_days {
         return Err(Error::Other(anyhow::anyhow!(
             "--archive-days ({}) must be at least --trim-days ({})",
             thresholds.archive_days,
             thresholds.trim_days
+        )));
+    }
+    if thresholds.force_archive_days < thresholds.archive_days {
+        return Err(Error::Other(anyhow::anyhow!(
+            "--force-archive-days ({}) must be at least --archive-days ({})",
+            thresholds.force_archive_days,
+            thresholds.archive_days
         )));
     }
 
@@ -118,16 +133,9 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
         force: args.force,
     };
 
-    let options = archive::Options {
-        level: args.level.unwrap_or(config.compression_level()?),
-        threads: args.threads.unwrap_or(config.compression_threads()?),
-        // What pManager will delete is what it refuses to store: a dependency
-        // tree rebuilds from the files beside it.
-        exclude: config.purge_dirs(),
-        overwrite: args.force,
-    };
-
-    let (skip, purge) = (config.skip_dirs(), config.purge_dirs());
+    let level = args.level.unwrap_or(config.compression_level()?);
+    let threads = args.threads.unwrap_or(config.compression_threads()?);
+    let skip = config.skip_dirs();
 
     let projects = targets(args, &db)?;
     if projects.is_empty() {
@@ -142,8 +150,20 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     let mut totals = Totals::default();
 
     for record in &projects {
+        // Resolved per project: which directories are rebuildable depends on
+        // what the project is built with.
+        let purge = config.purge_dirs(&record.path);
         let survey = lifecycle::survey(&record.path, &skip, &purge);
         let action = lifecycle::decide(record.state, &survey, record.active_since(), &policy);
+
+        let options = archive::Options {
+            level,
+            threads,
+            // What pManager will delete is what it refuses to store: a
+            // dependency tree rebuilds from the files beside it.
+            exclude: purge,
+            overwrite: args.force,
+        };
 
         if let Err(err) = visit(
             ctx,
@@ -153,6 +173,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
             &action,
             args,
             &options,
+            thresholds,
             &mut totals,
         ) {
             // Report and carry on: the next project may be perfectly healthy.
@@ -197,6 +218,7 @@ fn visit(
     action: &Action,
     args: &Args,
     options: &archive::Options,
+    thresholds: Thresholds,
     totals: &mut Totals,
 ) -> Result<()> {
     let quiet = ctx.is_quiet();
@@ -237,9 +259,18 @@ fn visit(
         Action::HeldBack { reason } => {
             totals.held += 1;
             if !quiet {
+                // Saying when the hold lapses turns "held back" from a state
+                // the project might sit in forever into a deadline.
+                let lapses = match survey.idle_days_from(record.active_since()) {
+                    Some(idle) => format!(
+                        "; archived regardless in {} day(s)",
+                        u64::from(thresholds.force_archive_days).saturating_sub(idle)
+                    ),
+                    None => String::new(),
+                };
                 writeln!(
                     out,
-                    "{}  old enough to archive, held back: {reason}",
+                    "{}  old enough to archive, held back: {reason}{lapses}",
                     label(record, survey)
                 )?;
             }

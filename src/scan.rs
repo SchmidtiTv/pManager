@@ -6,31 +6,136 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::error::Result;
 
-/// Directories that churn on their own, so an edit inside one is no evidence
-/// the project is alive. Not walked when looking for the last edit.
-pub const SKIP_DIRS: &[&str] = &[
-    "node_modules",
-    ".git",
-    ".next",
-    ".nuxt",
-    ".svelte-kit",
-    "dist",
-    "build",
-    "out",
-    "target",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".cache",
-    ".turbo",
-    "coverage",
-    "vendor",
+/// A toolchain pManager knows how to read a project by.
+///
+/// This table is the whole language story. Adding one means adding one entry:
+/// name it, say which files at the project root identify it, and list what it
+/// writes. Both defaults — what trimming deletes and what is ignored when
+/// dating a project — are derived from here, so there is no second list to
+/// remember to keep in step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ecosystem {
+    /// What it is called, as `pmanager info` prints it.
+    pub name: &'static str,
+    /// Files at the project root that say a project is built with it. Any one
+    /// of them is enough.
+    pub markers: &'static [&'static str],
+    /// Directories the toolchain rebuilds from the files beside them. These
+    /// are what trimming deletes and what an archive leaves out — the two are
+    /// the same set on purpose: what pManager is willing to delete is what it
+    /// refuses to spend space storing.
+    pub regenerable: &'static [&'static str],
+    /// Directories the toolchain writes to on its own. Ignored when dating a
+    /// project — a build is not somebody working — but never deleted, because
+    /// pManager cannot tell a build output from something hand-made that
+    /// happens to share the name.
+    pub churn: &'static [&'static str],
+}
+
+impl Ecosystem {
+    /// Whether `project` looks like it is built with this toolchain.
+    pub fn matches(&self, project: &Path) -> bool {
+        self.markers
+            .iter()
+            .any(|marker| project.join(marker).is_file())
+    }
+
+    /// Every directory this toolchain writes, regenerable or not.
+    fn writes(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.regenerable.iter().chain(self.churn).copied()
+    }
+}
+
+/// The toolchains pManager recognises.
+///
+/// A directory belongs in `regenerable` only if the ecosystem's own tooling
+/// puts it back from the files that travel into the archive beside it. Anything
+/// else belongs in `churn`, where it costs a project nothing to be wrong about.
+pub const ECOSYSTEMS: &[Ecosystem] = &[
+    Ecosystem {
+        name: "Node",
+        markers: &["package.json"],
+        regenerable: &["node_modules"],
+        churn: &[
+            ".next",
+            ".nuxt",
+            ".svelte-kit",
+            ".turbo",
+            "dist",
+            "build",
+            "out",
+            "coverage",
+        ],
+    },
+    Ecosystem {
+        name: "Rust",
+        markers: &["Cargo.toml"],
+        regenerable: &["target"],
+        churn: &[],
+    },
+    Ecosystem {
+        name: "Python",
+        markers: &["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"],
+        regenerable: &[".venv", "venv", "__pycache__"],
+        churn: &[".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox"],
+    },
+    Ecosystem {
+        name: "Go",
+        markers: &["go.mod"],
+        regenerable: &["vendor"],
+        churn: &[],
+    },
 ];
 
-/// Directories pManager deletes when trimming, and leaves out of archives —
-/// both because they rebuild from the files beside them. `.git` is
-/// deliberately absent: history is not regenerable.
-pub const PURGE_DIRS: &[&str] = &["node_modules"];
+/// Directories ignored when dating a project no matter what it is built with.
+/// `.git` is here rather than in an ecosystem because history is never
+/// regenerable — it travels into the archive with everything else.
+pub const ALWAYS_SKIP: &[&str] = &[".git", ".hg", ".svn", ".cache"];
+
+/// The toolchains `project` is built with, by the marker files at its root.
+/// A polyglot repository matches more than one.
+pub fn ecosystems(project: &Path) -> Vec<&'static Ecosystem> {
+    ECOSYSTEMS
+        .iter()
+        .filter(|eco| eco.matches(project))
+        .collect()
+}
+
+/// Directories trimming may delete in `project`: what the toolchains it
+/// actually uses can rebuild.
+///
+/// A project with no recognised marker yields nothing. That is deliberate —
+/// a bare `target` directory with no `Cargo.toml` beside it is not something
+/// pManager can claim to know how to rebuild, so it stays.
+pub fn regenerable_dirs(project: &Path) -> Vec<String> {
+    let mut dirs: Vec<String> = ecosystems(project)
+        .iter()
+        .flat_map(|eco| eco.regenerable.iter().map(|dir| (*dir).to_string()))
+        .collect();
+
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// Every directory ignored when looking for a project's last edit: everything
+/// any known toolchain writes, plus version control metadata.
+///
+/// Deliberately not filtered by ecosystem. Skipping too much only risks dating
+/// a project by an older file than it deserves, whereas counting a build as an
+/// edit would keep a dead project alive forever.
+pub fn skip_dirs() -> Vec<String> {
+    let mut dirs: Vec<String> = ECOSYSTEMS
+        .iter()
+        .flat_map(Ecosystem::writes)
+        .chain(ALWAYS_SKIP.iter().copied())
+        .map(str::to_string)
+        .collect();
+
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
 
 /// `package.json`'s name, falling back to the folder name. A broken manifest
 /// falls back rather than failing.
@@ -252,12 +357,103 @@ fn matches_name(path: &Path, names: &[String]) -> bool {
 mod tests {
     use super::*;
 
-    fn skip_dirs() -> Vec<String> {
-        SKIP_DIRS.iter().map(|name| (*name).to_string()).collect()
+    /// The dependency trees these tests build projects out of. Named rather
+    /// than detected: what is being tested here is the walk, not the table.
+    fn purge_dirs() -> Vec<String> {
+        vec!["node_modules".to_string()]
     }
 
-    fn purge_dirs() -> Vec<String> {
-        PURGE_DIRS.iter().map(|name| (*name).to_string()).collect()
+    #[test]
+    fn a_project_is_trimmed_by_what_it_is_built_with() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let node = dir.path().join("web");
+        std::fs::create_dir_all(&node).unwrap();
+        std::fs::write(node.join("package.json"), "{}").unwrap();
+        assert_eq!(regenerable_dirs(&node), ["node_modules"]);
+
+        let rust = dir.path().join("cli");
+        std::fs::create_dir_all(&rust).unwrap();
+        std::fs::write(rust.join("Cargo.toml"), "[package]").unwrap();
+        assert_eq!(regenerable_dirs(&rust), ["target"]);
+
+        let python = dir.path().join("scraper");
+        std::fs::create_dir_all(&python).unwrap();
+        std::fs::write(python.join("requirements.txt"), "requests").unwrap();
+        assert_eq!(regenerable_dirs(&python), [".venv", "__pycache__", "venv"]);
+    }
+
+    #[test]
+    fn a_polyglot_project_is_trimmed_by_each_of_its_toolchains() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+
+        let names: Vec<&str> = ecosystems(dir.path()).iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Node", "Rust"]);
+        assert_eq!(regenerable_dirs(dir.path()), ["node_modules", "target"]);
+    }
+
+    #[test]
+    fn an_unrecognised_project_has_nothing_trimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        // A `target` with no `Cargo.toml` beside it is not something pManager
+        // can claim to know how to rebuild.
+        std::fs::create_dir_all(dir.path().join("target")).unwrap();
+        std::fs::write(dir.path().join("notes.md"), "just files").unwrap();
+
+        assert!(ecosystems(dir.path()).is_empty());
+        assert!(regenerable_dirs(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn a_marker_has_to_be_a_file_at_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory named like a marker, and a marker one level down:
+        // neither makes this a Node project.
+        std::fs::create_dir_all(dir.path().join("package.json")).unwrap();
+        std::fs::create_dir_all(dir.path().join("packages/ui")).unwrap();
+        std::fs::write(dir.path().join("packages/ui/Cargo.toml"), "[package]").unwrap();
+
+        assert!(ecosystems(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn everything_any_toolchain_writes_is_ignored_when_dating_a_project() {
+        let skip = skip_dirs();
+
+        // Whatever the table grows, both halves of every entry land here —
+        // that is what stops a build from reading as somebody working.
+        for eco in ECOSYSTEMS {
+            for dir in eco.regenerable.iter().chain(eco.churn) {
+                assert!(
+                    skip.contains(&(*dir).to_string()),
+                    "{}'s {dir} is missing from the skip list",
+                    eco.name
+                );
+            }
+        }
+        for dir in ALWAYS_SKIP {
+            assert!(skip.contains(&(*dir).to_string()), "{dir}");
+        }
+
+        // Sorted and deduplicated, so shared names cost nothing.
+        let mut sorted = skip.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(skip, sorted);
+    }
+
+    #[test]
+    fn history_is_never_regenerable() {
+        for eco in ECOSYSTEMS {
+            assert!(
+                !eco.regenerable.contains(&".git"),
+                "{} would have pManager delete history",
+                eco.name
+            );
+        }
+        assert!(ALWAYS_SKIP.contains(&".git"));
     }
 
     /// Write `contents` to `root/relative`, creating parent directories.

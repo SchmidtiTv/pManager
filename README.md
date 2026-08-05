@@ -2,10 +2,13 @@
 
 Keeps the disk from filling up with projects you have stopped working on.
 
-Point pManager at your projects and once a day it deletes the `node_modules` of
-the ones nobody has touched in two months, and compresses the ones nobody has
-touched in six. Nothing is lost — the trimmed ones need an `npm install`, the
+Point pManager at your projects and once a day it deletes the dependency trees
+of the ones nobody has touched in two months, and compresses the ones nobody
+has touched in six. Nothing is lost — the trimmed ones need a reinstall, the
 compressed ones a `pmanager restore`.
+
+Which directories those are follows the project: `node_modules` for Node,
+`target` for Rust, `.venv` and `__pycache__` for Python, `vendor` for Go.
 
 ```
 C:\Code\                before                C:\Code\                  after
@@ -103,14 +106,14 @@ These are accepted before or after the subcommand.
 
 ```
 active  ──60 days idle──▶  trimmed  ──180 days idle──▶  archived
-   ▲                          │                            │
-   └──────(edited again)──────┘         pmanager restore ──┘
+   ▲                          │           (240 with unfinished work)  │
+   └──────(edited again)──────┘              pmanager restore ────────┘
 ```
 
 **active** — normal, nothing is done to it.
 
 **trimmed** — the dependency trees are deleted. The project itself is
-completely untouched: sources, config, `.git`, everything. `npm install` undoes
+completely untouched: sources, config, `.git`, everything. A reinstall undoes
 it. This is where most of the disk is won, and it costs nothing but a reinstall
 you would have done anyway after six months away.
 
@@ -122,7 +125,9 @@ again.
 
 The age of a project is the most recent modification time of any file in it,
 **ignoring directories that churn on their own**: `node_modules`, `.git`,
-`dist`, `build`, `target`, `.venv`, `coverage` and the rest of `skip_dirs`.
+`dist`, `build`, `target`, `.venv`, `coverage` and everything else any known
+toolchain writes. That list is derived from `ECOSYSTEMS`, so a directory named
+there is never mistaken for somebody working.
 
 That exclusion is the whole trick. An `npm install` rewrites thousands of files
 without anyone opening the project, and counting those would keep a dead
@@ -137,9 +142,9 @@ project can be worked on for a week without a single commit.
 
 The archive holds **everything except the purge directories** — including
 `.git`. History, stashes, local branches and remotes all survive the round
-trip, because none of that is regenerable. Only `node_modules` and whatever
-else you add to `purge_dirs` is left out, on the grounds that one command
-rebuilds it.
+trip, because none of that is regenerable. Only the project's own dependency
+trees, and whatever else you add to `purge_dirs`, are left out, on the grounds
+that one command rebuilds them.
 
 The rule is a single one, and it runs in both directions: **what pManager is
 willing to delete is exactly what it refuses to store.**
@@ -164,21 +169,41 @@ One project failing does not stop the others: an unplugged drive is reported,
 the remaining projects are still swept, and the run ends with a non-zero exit
 code so a failed scheduled run is visible in Task Scheduler's history.
 
-### Unfinished work is held back
+### Unfinished work is held back, for eight months
 
-A project with uncommitted changes or unpushed commits is never archived,
-however old it is:
+A project with uncommitted changes or unpushed commits is not archived when it
+reaches `archive_days`:
 
 ```
 $ pmanager run
-half-done            1y ago  old enough to archive, held back: 1 uncommitted change(s)
+half-done            7mo ago  old enough to archive, held back: 1 uncommitted change(s); archived regardless in 27 day(s)
 ```
 
 Nothing would actually be *lost* by archiving it — the working tree and `.git`
 both go into the archive — but a folder disappearing out from under work you
 left half-finished is a surprise, and that is what uncommitted changes mean.
-`--force` overrides it. Trimming is not affected: deleting `node_modules` never
-touches your work.
+`--force` overrides it. Trimming is not affected: deleting a dependency tree
+never touches your work.
+
+The hold is a delay, not a veto. At `force_archive_days` — **240 days idle,
+eight months, by default** — it lapses and the project is archived regardless
+of what is uncommitted:
+
+```
+$ pmanager run --yes
+half-done            9mo ago  archived to C:\Code\half-done.pArchived  1204 file(s), 410.0 MiB -> 2.1 MiB, freed 407.9 MiB
+```
+
+Work nobody has touched in eight months is not work in progress, and a single
+dirty file should not exempt a project from the disk budget forever. The
+archive is the same archive either way — the uncommitted changes and the whole
+of `.git` are inside it, and `pmanager restore` brings them back exactly as
+they were.
+
+Raise `force_archive_days` to wait longer, or set it equal to `archive_days` to
+turn the hold off entirely. It may not be set *below* `archive_days`: the hold
+would expire before it could ever apply, which is a confusing way to write what
+`force_archive_days = archive_days` says plainly.
 
 ### Restoring does not restart the clock at zero
 
@@ -223,7 +248,7 @@ pmanager project prune --yes    # stop tracking them
 $ pmanager list
 NAME           EDITED     COMMITTED    STATE     NOTES
 api-server     2h ago     2h ago       active    1.2 GiB to reclaim
-half-done      1y ago     1y ago       active    410.0 MiB to reclaim, stale >60d, 1 uncommitted
+half-done      7mo ago    7mo ago      active    410.0 MiB to reclaim, stale >60d, 1 uncommitted
 old-dashboard  3mo ago    3mo ago      trimmed   stale >60d
 scratch-cli    8mo ago    —            archived  2.1 MiB
 
@@ -253,15 +278,16 @@ $ pmanager info half-done
 half-done  C:\Code\half-done
   state           active
   tracked         3mo ago
-  last edit       1y ago  src/index.js
+  last edit       7mo ago  src/index.js
+  toolchain       Node
   dependencies    410.0 MiB in 1 tree(s)
                     410.0 MiB  node_modules
   branch          main  → origin/main
-  last commit     1y ago  ff1b8aa  Rough draft  (Schmidti)
+  last commit     7mo ago  ff1b8aa  Rough draft  (Schmidti)
   untracked       1 file(s)
                     src/wip.js
 
-  next run        nothing — past 180 days, but held back by 1 uncommitted change(s) (--force overrides)
+  next run        nothing — past 180 days, but held back by 1 uncommitted change(s) (--force overrides, and it is archived regardless in 27 day(s), at 240 days idle)
 ```
 
 ## The run
@@ -291,6 +317,7 @@ Useful flags:
 ```sh
 pmanager run --yes --project api-server   # one project; repeatable
 pmanager run --yes --trim-days 30         # override the thresholds for this run
+pmanager run --yes --force-archive-days 365   # let unfinished work hold on for a year
 pmanager run --yes --no-archive           # trim only, never archive
 pmanager run --yes --no-trim              # archive only, never trim
 pmanager run --yes --keep-source          # write the archives, keep the folders
@@ -448,8 +475,9 @@ is an error. Unknown keys are rejected so typos surface immediately.
 | `database` | `pmanager.db` in `data_dir` | SQLite database file |
 | `trim_days` | `60` | Days idle before the dependency trees go |
 | `archive_days` | `180` | Days idle before the project is compressed |
-| `purge_dirs` | `["node_modules"]` | Deleted when trimming; kept out of archives |
-| `skip_dirs` | see `src/scan.rs` | Not counted when dating a project |
+| `force_archive_days` | `240` | Days idle before unfinished work stops holding it back |
+| `purge_dirs` | the project's own toolchains | Deleted when trimming; kept out of archives |
+| `skip_dirs` | see `ECOSYSTEMS` in `src/scan.rs` | Not counted when dating a project |
 | `archive_dir` | beside each project | Where archives are written |
 | `install_command` | `npm install` when there is a `package.json` | Run by `restore` |
 | `compression_level` | `6` | LZMA2 level used by `run`, 0–9 |
@@ -465,15 +493,57 @@ project looking freshly edited.
 
 `install_command = []` turns the reinstall step off entirely.
 
+`archive_days` below `trim_days`, and `force_archive_days` below
+`archive_days`, are both rejected: each would make the step it belongs to
+unreachable.
+
 ### Beyond Node
 
-The defaults are Node-shaped because that is what most of this is for, but
-nothing in the design is:
+Nothing in the design is Node-specific. What trimming deletes is decided per
+project, from the manifest sitting at its root:
+
+| Toolchain | Recognised by | Trimmed |
+| --- | --- | --- |
+| Node | `package.json` | `node_modules` |
+| Rust | `Cargo.toml` | `target` |
+| Python | `pyproject.toml`, `requirements.txt`, `setup.py`, `Pipfile` | `.venv`, `venv`, `__pycache__` |
+| Go | `go.mod` | `vendor` |
+
+So a machine holding all four needs no configuration at all, and a `target`
+directory with no `Cargo.toml` beside it is never touched — pManager only
+deletes what the tooling to rebuild it is sitting right there for. A polyglot
+repository matching more than one row has all of their directories trimmed.
+`pmanager info` names what it detected.
+
+Setting `purge_dirs` turns the detection off and applies your list to every
+project as written, which is how to name something pManager does not know
+about:
 
 ```toml
-purge_dirs = ["node_modules", "target", ".venv", "__pycache__", "vendor"]
+purge_dirs = ["node_modules", "target", "_build", "deps"]
 install_command = []          # too many ecosystems to guess; do it yourself
 ```
+
+#### Adding a toolchain
+
+`ECOSYSTEMS` in `src/scan.rs` is the whole language story — one entry per
+toolchain, naming the manifests that identify it, the directories it can
+rebuild, and the directories it merely writes to:
+
+```rust
+Ecosystem {
+    name: "Elixir",
+    markers: &["mix.exs"],
+    regenerable: &["deps", "_build"],
+    churn: &[],
+},
+```
+
+Both defaults are derived from that table, so there is no second list to keep
+in step: anything named here is automatically ignored when dating a project as
+well. A directory belongs in `regenerable` only if the toolchain puts it back
+from the files that travel into the archive beside it; anything else belongs in
+`churn`, where being wrong about it costs a project nothing.
 
 ## Layout
 
