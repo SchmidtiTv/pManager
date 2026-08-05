@@ -468,7 +468,7 @@ fn no_archive_stops_at_trimming() {
         .success();
 
     assert!(path.is_dir(), "the project should still be there");
-    assert!(!path.with_extension("7z").exists());
+    assert!(!path.with_extension("pArchived").exists());
 }
 
 // ── Archiving and restoring ──────────────────────────────────────────────────
@@ -486,7 +486,7 @@ fn a_long_abandoned_project_is_archived_and_can_be_restored() {
         .success()
         .stdout(predicate::str::contains("archived to"));
 
-    let archive = dir.path().join("dashboard.7z");
+    let archive = dir.path().join("dashboard.pArchived");
     assert!(
         archive.is_file(),
         "the archive should be beside the project"
@@ -564,7 +564,7 @@ fn keep_source_writes_the_archive_but_leaves_the_project() {
         .success()
         .stdout(predicate::str::contains("folder kept"));
 
-    assert!(dir.path().join("dashboard.7z").is_file());
+    assert!(dir.path().join("dashboard.pArchived").is_file());
     assert!(path.is_dir());
 }
 
@@ -582,8 +582,8 @@ fn archives_can_be_collected_in_one_directory() {
         .assert()
         .success();
 
-    assert!(vault.join("dashboard.7z").is_file());
-    assert!(!dir.path().join("dashboard.7z").exists());
+    assert!(vault.join("dashboard.pArchived").is_file());
+    assert!(!dir.path().join("dashboard.pArchived").exists());
 }
 
 #[test]

@@ -150,7 +150,7 @@ fn remove(ctx: &Context, projects: &[String]) -> Result<()> {
         if !ctx.is_quiet() {
             writeln!(out, "untracked {}  {}", record.name, record.path.display())?;
 
-            // Untracking an archived project abandons its `.7z`, so say where
+            // Untracking an archived project abandons its archive, so say where
             // it is while that is still known.
             if let Some(archive) = &record.archive {
                 writeln!(
