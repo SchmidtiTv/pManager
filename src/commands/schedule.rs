@@ -81,7 +81,7 @@ fn install(ctx: &Context, at: &str, name: &str, force: bool) -> Result<()> {
         "/TN".to_string(),
         name.to_string(),
         "/TR".to_string(),
-        command,
+        command.clone(),
         "/SC".to_string(),
         "DAILY".to_string(),
         "/ST".to_string(),
@@ -98,7 +98,7 @@ fn install(ctx: &Context, at: &str, name: &str, force: bool) -> Result<()> {
             task: name.to_string(),
             at: at.to_string(),
             executable: crate::json::path(&exe),
-            command: task_command(&exe, ctx.globals().config.as_deref()),
+            command,
         });
     }
 
