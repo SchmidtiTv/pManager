@@ -83,7 +83,8 @@ fn add(ctx: &Context, projects: &[PathBuf], name: Option<&str>) -> Result<()> {
         )?;
 
         // Say up front what the first run would do, rather than surprising.
-        let survey = crate::lifecycle::survey(&path, &config.skip_dirs(), &config.purge_dirs());
+        let survey =
+            crate::lifecycle::survey(&path, &config.skip_dirs(), &config.purge_dirs(&path));
         match survey.last_edit.as_ref() {
             Some(edit) => {
                 let action = crate::lifecycle::decide(

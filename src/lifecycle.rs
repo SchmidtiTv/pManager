@@ -10,6 +10,12 @@
 //! back; archived means the project is a verified `.pArchived` and the folder
 //! is not there any more.
 //!
+//! Uncommitted or unpushed work holds a project back at the archive step —
+//! but only for so long. Past `force_archive_days` it is archived anyway:
+//! nothing is lost, since the working tree and `.git` both travel into the
+//! archive, and a project nobody has touched in eight months is not work in
+//! progress any more.
+//!
 //! Filesystem only — no database, no printing, no clap — so the rules can be
 //! tested directly.
 
@@ -69,6 +75,9 @@ pub struct Thresholds {
     pub trim_days: u32,
     /// Days of no edits before the project is compressed and removed.
     pub archive_days: u32,
+    /// Days of no edits after which unfinished work no longer holds the
+    /// project back — it is archived as if `--force` had been passed.
+    pub force_archive_days: u32,
 }
 
 impl Default for Thresholds {
@@ -76,6 +85,7 @@ impl Default for Thresholds {
         Self {
             trim_days: DEFAULT_TRIM_DAYS,
             archive_days: DEFAULT_ARCHIVE_DAYS,
+            force_archive_days: DEFAULT_FORCE_ARCHIVE_DAYS,
         }
     }
 }
@@ -85,6 +95,10 @@ pub const DEFAULT_TRIM_DAYS: u32 = 60;
 
 /// Days of no edits before a project is archived. pTag's `--deep-archive-days`.
 pub const DEFAULT_ARCHIVE_DAYS: u32 = 180;
+
+/// Days of no edits before a project is archived even though it holds
+/// uncommitted or unpushed work — eight months, counted as 30-day months.
+pub const DEFAULT_FORCE_ARCHIVE_DAYS: u32 = 240;
 
 /// What a project looks like on disk right now.
 #[derive(Debug, Clone)]
@@ -112,6 +126,23 @@ impl Survey {
         self.last_edit
             .as_ref()
             .map(|edit| scan::days_since(edit.at))
+    }
+
+    /// The point every threshold is measured from: the last edit, or the
+    /// restore that reset the clock, whichever is later. `None` when there is
+    /// nothing to date the project by.
+    ///
+    /// [`decide`] and anything reporting how far along a project is share this
+    /// so a countdown cannot disagree with the decision it counts down to.
+    pub fn idle_from(&self, active_since: Option<SystemTime>) -> Option<SystemTime> {
+        self.last_edit
+            .as_ref()
+            .map(|edit| active_since.map_or(edit.at, |seen| edit.at.max(seen)))
+    }
+
+    /// Whole days on the clock [`idle_from`](Self::idle_from) starts.
+    pub fn idle_days_from(&self, active_since: Option<SystemTime>) -> Option<u64> {
+        self.idle_from(active_since).map(scan::days_since)
     }
 }
 
@@ -146,7 +177,8 @@ pub enum Action {
     Trim { dirs: Vec<Purgeable> },
     /// Compress the project to `destination` and remove the folder.
     Archive { destination: PathBuf },
-    /// Old enough to archive, but holding unfinished work. `--force` overrides.
+    /// Old enough to archive, but holding unfinished work. `--force` overrides,
+    /// and so does sitting untouched until `force_archive_days`.
     HeldBack { reason: String },
     /// Edited again since it was trimmed: it is a live project once more.
     Revive,
@@ -186,6 +218,9 @@ pub struct Policy<'a> {
 ///
 /// Age is checked against the archive threshold first, so a long-abandoned
 /// project goes straight there rather than waiting out a trim it does not need.
+///
+/// Unfinished work holds the archive step back, but not indefinitely: past
+/// `force_archive_days` the hold expires and the project is archived anyway.
 pub fn decide(
     state: State,
     survey: &Survey,
@@ -205,17 +240,21 @@ pub fn decide(
     // No files outside the dependency trees means nothing to date the project
     // by. Doing nothing is the only defensible reading: an empty checkout is
     // not the same as an old one.
-    let Some(edit) = &survey.last_edit else {
+    let Some(idle_from) = survey.idle_from(active_since) else {
         return Action::Nothing {
             reason: "no files to date it by".into(),
         };
     };
 
-    let idle_from = active_since.map_or(edit.at, |seen| edit.at.max(seen));
-
     if scan::older_than(idle_from, policy.thresholds.archive_days) {
+        // A hold is a courtesy, not a veto. Once a project has sat untouched
+        // for `force_archive_days` the unfinished work is as stale as the rest
+        // of it, and the archive keeps both the working tree and `.git`.
+        let hold_expired = scan::older_than(idle_from, policy.thresholds.force_archive_days);
+
         if let Some(reason) = survey.git.hold_reason()
             && !policy.force
+            && !hold_expired
         {
             return Action::HeldBack { reason };
         }
@@ -336,11 +375,13 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn skip() -> Vec<String> {
-        scan::SKIP_DIRS.iter().map(|d| (*d).to_string()).collect()
+        scan::skip_dirs()
     }
 
+    /// These tests build Node-shaped projects; which directories a real run
+    /// would pick is [`scan::regenerable_dirs`]'s business, tested there.
     fn purge() -> Vec<String> {
-        scan::PURGE_DIRS.iter().map(|d| (*d).to_string()).collect()
+        vec!["node_modules".to_string()]
     }
 
     /// A project whose source file was last edited `days` ago.
@@ -497,7 +538,9 @@ mod tests {
     #[test]
     fn unfinished_work_holds_an_old_project_back() {
         let dir = tempfile::tempdir().unwrap();
-        let path = project(dir.path(), "api", 400);
+        // Past the archive threshold, but short of the eight months at which
+        // the hold lapses on its own.
+        let path = project(dir.path(), "api", 200);
 
         let mut survey = survey(&path, &skip(), &purge());
         survey.git = git::Status {
@@ -521,6 +564,127 @@ mod tests {
             decide(State::Active, &survey, None, &forced),
             Action::Archive { .. }
         ));
+    }
+
+    #[test]
+    fn a_hold_lapses_once_the_project_is_old_enough() {
+        let dir = tempfile::tempdir().unwrap();
+        // Eight months and a day, with work that was never committed.
+        let path = project(dir.path(), "api", 241);
+
+        let mut survey = survey(&path, &skip(), &purge());
+        survey.git = git::Status {
+            repo: true,
+            unstaged: vec!["src/index.ts".into()],
+            ahead: 3,
+            upstream: Some("origin/main".into()),
+            ..Default::default()
+        };
+
+        let action = decide(State::Active, &survey, None, &Policy::default());
+        assert!(
+            matches!(action, Action::Archive { .. }),
+            "past force_archive_days the unfinished work is as stale as the \
+             rest of the project, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn a_hold_still_applies_between_the_two_archive_thresholds() {
+        let dir = tempfile::tempdir().unwrap();
+        // Past archive_days (180) but not yet force_archive_days (240).
+        let path = project(dir.path(), "api", 200);
+
+        let mut survey = survey(&path, &skip(), &purge());
+        survey.git = git::Status {
+            repo: true,
+            untracked: vec!["notes.md".into()],
+            ..Default::default()
+        };
+
+        let action = decide(State::Active, &survey, None, &Policy::default());
+        assert!(matches!(action, Action::HeldBack { .. }), "got {action:?}");
+    }
+
+    #[test]
+    fn a_restore_delays_the_lapse_along_with_everything_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = project(dir.path(), "api", 400);
+
+        let mut survey = survey(&path, &skip(), &purge());
+        survey.git = git::Status {
+            repo: true,
+            untracked: vec!["notes.md".into()],
+            ..Default::default()
+        };
+
+        // Restored 200 days ago: old enough to archive, but the eight months
+        // run from the restore, so the hold is still in force.
+        let action = decide(
+            State::Active,
+            &survey,
+            Some(days_ago(200)),
+            &Policy::default(),
+        );
+        assert!(matches!(action, Action::HeldBack { .. }), "got {action:?}");
+
+        let action = decide(
+            State::Active,
+            &survey,
+            Some(days_ago(250)),
+            &Policy::default(),
+        );
+        assert!(matches!(action, Action::Archive { .. }), "got {action:?}");
+    }
+
+    #[test]
+    fn the_lapse_threshold_can_be_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = project(dir.path(), "api", 200);
+
+        let mut survey = survey(&path, &skip(), &purge());
+        survey.git = git::Status {
+            repo: true,
+            untracked: vec!["notes.md".into()],
+            ..Default::default()
+        };
+
+        let impatient = Policy {
+            thresholds: Thresholds {
+                force_archive_days: 190,
+                ..Thresholds::default()
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            decide(State::Active, &survey, None, &impatient),
+            Action::Archive { .. }
+        ));
+
+        let patient = Policy {
+            thresholds: Thresholds {
+                force_archive_days: 3_650,
+                ..Thresholds::default()
+            },
+            ..Default::default()
+        };
+        assert!(matches!(
+            decide(State::Active, &survey, None, &patient),
+            Action::HeldBack { .. }
+        ));
+    }
+
+    #[test]
+    fn the_idle_clock_reported_is_the_one_decisions_are_made_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = project(dir.path(), "api", 400);
+        let survey = survey(&path, &skip(), &purge());
+
+        assert_eq!(survey.idle_days_from(None), Some(400));
+        // A restore raises the floor…
+        assert_eq!(survey.idle_days_from(Some(days_ago(30))), Some(30));
+        // …but never makes a project look older than its files do.
+        assert_eq!(survey.idle_days_from(Some(days_ago(900))), Some(400));
     }
 
     #[test]

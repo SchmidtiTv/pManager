@@ -27,13 +27,18 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     let config = ctx.config()?;
     let record = db.find_project(&args.project)?;
 
-    let survey = lifecycle::survey(&record.path, &config.skip_dirs(), &config.purge_dirs());
+    let survey = lifecycle::survey(
+        &record.path,
+        &config.skip_dirs(),
+        &config.purge_dirs(&record.path),
+    );
     let policy = Policy {
         thresholds: config.thresholds()?,
         archive_dir: config.archive_dir.as_deref(),
         force: false,
     };
     let action = lifecycle::decide(record.state, &survey, record.active_since(), &policy);
+    let idle_days = survey.idle_days_from(record.active_since());
 
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}  {}", record.name, record.path.display())?;
@@ -74,7 +79,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     git_fields(&mut out, &survey, &field)?;
 
     writeln!(out)?;
-    field(&mut out, "next run", &next_run(&action, &policy))?;
+    field(&mut out, "next run", &next_run(&action, &policy, idle_days))?;
     Ok(())
 }
 
@@ -117,6 +122,23 @@ fn live_fields(
         }
         None => field(out, "last edit", "no files found to date it by")?,
     }
+
+    // What pManager thinks the project is built with, since that is what
+    // decides which directories it is willing to delete.
+    let toolchains = scan::ecosystems(&survey.path);
+    field(
+        out,
+        "toolchain",
+        &if toolchains.is_empty() {
+            "unrecognised — nothing will be trimmed".to_string()
+        } else {
+            toolchains
+                .iter()
+                .map(|eco| eco.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    )?;
 
     if survey.purgeable.is_empty() {
         field(out, "dependencies", "none on disk")?;
@@ -257,7 +279,7 @@ fn group(out: &mut impl Write, label: &str, paths: &[String]) -> std::io::Result
 }
 
 /// What `pmanager run` would do to this project, and why.
-fn next_run(action: &Action, policy: &Policy<'_>) -> String {
+fn next_run(action: &Action, policy: &Policy<'_>, idle_days: Option<u64>) -> String {
     match action {
         Action::Trim { dirs } => format!(
             "trim {} dependency tree(s), freeing {}",
@@ -267,10 +289,22 @@ fn next_run(action: &Action, policy: &Policy<'_>) -> String {
         Action::Archive { destination } => {
             format!("archive to {}", destination.display())
         }
-        Action::HeldBack { reason } => format!(
-            "nothing — past {} days, but held back by {reason} (--force overrides)",
-            policy.thresholds.archive_days
-        ),
+        Action::HeldBack { reason } => {
+            // The hold is temporary, so say when it lapses as well as how to
+            // override it now.
+            let force_days = policy.thresholds.force_archive_days;
+            let lapses = match idle_days {
+                Some(idle) => format!(
+                    ", and it is archived regardless in {} day(s), at {force_days} days idle",
+                    u64::from(force_days).saturating_sub(idle)
+                ),
+                None => String::new(),
+            };
+            format!(
+                "nothing — past {} days, but held back by {reason} (--force overrides{lapses})",
+                policy.thresholds.archive_days
+            )
+        }
         Action::Revive => "mark it active again".to_string(),
         Action::Missing => "nothing — `pmanager project prune` clears it out".to_string(),
         Action::Nothing { reason } => format!("nothing — {reason}"),
