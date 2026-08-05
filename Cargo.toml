@@ -40,7 +40,9 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
+# Unwinding, not aborting: compression runs in-process, and a panic in the
+# compression library is a failure pManager can contain — see `archive::compress`.
+# Aborting turns one bad project into a dead run and a half-written archive.
 
 [lints.rust]
 unsafe_code = "forbid"
