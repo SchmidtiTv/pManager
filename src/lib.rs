@@ -12,6 +12,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod git;
+pub mod json;
 pub mod lifecycle;
 pub mod logging;
 pub mod scan;

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crate::archive::{self, human_bytes};
 use crate::commands::Context;
 use crate::error::Result;
+use crate::json;
 use crate::lifecycle::State;
 use crate::scan;
 
@@ -64,6 +65,7 @@ fn add(ctx: &Context, projects: &[PathBuf], name: Option<&str>) -> Result<()> {
     let db = ctx.open_database()?;
     let config = ctx.config()?;
     let mut out = std::io::stdout().lock();
+    let mut tracked = Vec::new();
 
     for project in projects {
         // Canonicalized so two spellings cannot become two registrations.
@@ -71,7 +73,42 @@ fn add(ctx: &Context, projects: &[PathBuf], name: Option<&str>) -> Result<()> {
         let name = name.map_or_else(|| scan::project_name(&path), str::to_string);
         let (record, inserted) = db.add_project(&path, &name)?;
 
+        // Nothing below this line changes anything; it only says what was
+        // registered and what the first run would make of it.
         if ctx.is_quiet() {
+            continue;
+        }
+
+        // Say up front what the first run would do, rather than surprising.
+        let survey =
+            crate::lifecycle::survey(&path, &config.skip_dirs(), &config.purge_dirs(&path));
+        let action = match survey.last_edit {
+            Some(_) => Some(crate::lifecycle::decide(
+                record.state,
+                &survey,
+                record.active_since(),
+                &crate::lifecycle::Policy {
+                    thresholds: config.thresholds()?,
+                    archive_dir: config.archive_dir.as_deref(),
+                    force: false,
+                },
+            )),
+            None => None,
+        };
+
+        if ctx.is_json() {
+            tracked.push(json::TrackedProject {
+                name,
+                path: json::path(&path),
+                added: inserted,
+                last_edit: survey
+                    .last_edit
+                    .as_ref()
+                    .map(|edit| json::Time::at(edit.at)),
+                next_run: action
+                    .as_ref()
+                    .map(|action| json::NextRun::new(action, describe(action, &survey))),
+            });
             continue;
         }
 
@@ -81,31 +118,19 @@ fn add(ctx: &Context, projects: &[PathBuf], name: Option<&str>) -> Result<()> {
             if inserted { "tracking" } else { "updated" },
             path.display()
         )?;
-
-        // Say up front what the first run would do, rather than surprising.
-        let survey =
-            crate::lifecycle::survey(&path, &config.skip_dirs(), &config.purge_dirs(&path));
-        match survey.last_edit.as_ref() {
-            Some(edit) => {
-                let action = crate::lifecycle::decide(
-                    record.state,
-                    &survey,
-                    record.active_since(),
-                    &crate::lifecycle::Policy {
-                        thresholds: config.thresholds()?,
-                        archive_dir: config.archive_dir.as_deref(),
-                        force: false,
-                    },
-                );
-                writeln!(
-                    out,
-                    "  last edited {}, {}",
-                    scan::time_ago(edit.at),
-                    describe(&action, &survey)
-                )?;
-            }
-            None => writeln!(out, "  no files found to date it by")?,
+        match (survey.last_edit.as_ref(), &action) {
+            (Some(edit), Some(action)) => writeln!(
+                out,
+                "  last edited {}, {}",
+                scan::time_ago(edit.at),
+                describe(action, &survey)
+            )?,
+            _ => writeln!(out, "  no files found to date it by")?,
         }
+    }
+
+    if ctx.is_json() {
+        json::emit(&json::Tracked { projects: tracked })?;
     }
 
     Ok(())
@@ -143,10 +168,20 @@ fn describe(action: &crate::lifecycle::Action, survey: &crate::lifecycle::Survey
 fn remove(ctx: &Context, projects: &[String]) -> Result<()> {
     let db = ctx.open_database()?;
     let mut out = std::io::stdout().lock();
+    let mut untracked = Vec::new();
 
     for query in projects {
         let record = db.find_project(query)?;
         db.remove_project(record.id)?;
+
+        if ctx.is_json() {
+            untracked.push(json::UntrackedProject {
+                name: record.name.clone(),
+                path: json::path(&record.path),
+                archive: record.archive.as_ref().map(json::Archive::new),
+            });
+            continue;
+        }
 
         if !ctx.is_quiet() {
             writeln!(out, "untracked {}  {}", record.name, record.path.display())?;
@@ -164,6 +199,12 @@ fn remove(ctx: &Context, projects: &[String]) -> Result<()> {
         }
     }
 
+    if ctx.is_json() {
+        json::emit(&json::Untracked {
+            projects: untracked,
+        })?;
+    }
+
     Ok(())
 }
 
@@ -179,6 +220,27 @@ fn prune(ctx: &Context, yes: bool) -> Result<()> {
         .filter(|record| record.state != State::Archived && !record.path.is_dir())
         .collect();
 
+    // Whether they were actually dropped, which takes `--yes`.
+    let untracked = yes && !missing.is_empty();
+    if untracked {
+        for record in &missing {
+            db.remove_project(record.id)?;
+        }
+    }
+
+    if ctx.is_json() {
+        return json::emit(&json::Pruned {
+            projects: missing
+                .iter()
+                .map(|record| json::MissingProject {
+                    name: record.name.clone(),
+                    path: json::path(&record.path),
+                })
+                .collect(),
+            untracked,
+        });
+    }
+
     if missing.is_empty() {
         if !ctx.is_quiet() {
             writeln!(out, "every tracked project is where it should be")?;
@@ -190,18 +252,14 @@ fn prune(ctx: &Context, yes: bool) -> Result<()> {
         writeln!(out, "{}  {}", record.name, record.path.display())?;
     }
 
-    if !yes {
+    if untracked {
+        writeln!(out, "\nuntracked {} missing project(s)", missing.len())?;
+    } else {
         writeln!(
             out,
             "\n{} project(s) missing; pass --yes to stop tracking them",
             missing.len()
         )?;
-        return Ok(());
     }
-
-    for record in &missing {
-        db.remove_project(record.id)?;
-    }
-    writeln!(out, "\nuntracked {} missing project(s)", missing.len())?;
     Ok(())
 }

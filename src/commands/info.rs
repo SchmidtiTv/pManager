@@ -9,6 +9,7 @@ use std::io::Write;
 use crate::archive::human_bytes;
 use crate::commands::Context;
 use crate::error::Result;
+use crate::json;
 use crate::lifecycle::{self, Action, Policy, State};
 use crate::scan;
 
@@ -39,6 +40,10 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     };
     let action = lifecycle::decide(record.state, &survey, record.active_since(), &policy);
     let idle_days = survey.idle_days_from(record.active_since());
+
+    if ctx.is_json() {
+        return json::emit(&as_json(&record, &survey, &action, &policy, idle_days));
+    }
 
     let mut out = std::io::stdout().lock();
     writeln!(out, "{}  {}", record.name, record.path.display())?;
@@ -83,14 +88,57 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     Ok(())
 }
 
-fn state_line(record: &crate::db::ProjectRecord) -> String {
-    let since = match record.state {
+/// Everything above, as one document.
+///
+/// Assembled from the same survey and the same decision the printed report is,
+/// so the two cannot disagree about what the next run would do.
+fn as_json(
+    record: &crate::db::ProjectRecord,
+    survey: &lifecycle::Survey,
+    action: &Action,
+    policy: &Policy<'_>,
+    idle_days: Option<u64>,
+) -> json::Info {
+    json::Info {
+        name: record.name.clone(),
+        path: json::path(&record.path),
+        state: record.state.as_str(),
+        state_since: state_since(record).map(json::Time::stored),
+        tracked: json::Time::stored(record.added_at),
+        present: survey.present,
+        last_edit: survey
+            .last_edit
+            .as_ref()
+            .map(|edit| json::Edit::new(edit, &survey.path)),
+        idle_days,
+        // Empty for an archived project: there is no folder left to read.
+        toolchains: scan::ecosystems(&survey.path)
+            .iter()
+            .map(|eco| eco.name)
+            .collect(),
+        dependencies: json::Dependencies {
+            bytes: survey.purgeable_bytes(),
+            trees: json::Tree::all(&survey.purgeable, &survey.path),
+        },
+        reclaimed_bytes: record.freed_bytes,
+        restored: record.restored_at.map(json::Time::stored),
+        archive: record.archive.as_ref().map(json::Archive::new),
+        git: json::Git::new(&survey.git),
+        next_run: json::NextRun::new(action, next_run(action, policy, idle_days)),
+    }
+}
+
+/// When the project entered its current state, if that is a thing it did.
+fn state_since(record: &crate::db::ProjectRecord) -> Option<i64> {
+    match record.state {
         State::Trimmed => record.trimmed_at,
         State::Archived => record.archived_at,
         State::Active => None,
-    };
+    }
+}
 
-    match since {
+fn state_line(record: &crate::db::ProjectRecord) -> String {
+    match state_since(record) {
         Some(at) => format!(
             "{} since {}",
             record.state,

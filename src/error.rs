@@ -98,17 +98,65 @@ impl Error {
         }
     }
 
+    /// A stable slug naming the category, as `--json` reports it. The same
+    /// categories [`Error::exit_code`] distinguishes, spelled out.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Error::NotFound { .. } => "not_found",
+            Error::ConfigRead { .. } | Error::ConfigParse { .. } | Error::NoConfigDir => "config",
+            Error::Database(_) | Error::Sqlite(_) => "database",
+            Error::Archive(_) => "archive",
+            Error::Interrupted => "interrupted",
+            Error::Io(_) => "io",
+            Error::Other(_) => "failure",
+        }
+    }
+
     /// Render the error and its full `source` chain to stderr.
     pub fn report(&self) -> ExitCode {
         eprintln!("error: {self}");
 
-        let mut source = std::error::Error::source(self);
-        while let Some(cause) = source {
+        for cause in self.causes() {
             eprintln!("  caused by: {cause}");
-            source = cause.source();
         }
 
         ExitCode::from(self.exit_code())
+    }
+
+    /// The same report as one JSON document, for `--json`.
+    ///
+    /// On stderr, where the human report goes: stdout carries the command's
+    /// document and nothing else, so a caller parsing it is not handed an
+    /// error object where a listing was promised.
+    pub fn report_json(&self) -> ExitCode {
+        let report = crate::json::ErrorReport {
+            error: crate::json::ErrorBody {
+                message: self.to_string(),
+                kind: self.kind(),
+                exit_code: self.exit_code(),
+                causes: self.causes(),
+            },
+        };
+
+        match serde_json::to_string_pretty(&report) {
+            Ok(rendered) => eprintln!("{rendered}"),
+            // Reporting the failure to report would be no more likely to work.
+            Err(_) => return self.report(),
+        }
+
+        ExitCode::from(self.exit_code())
+    }
+
+    /// The `source` chain, outermost first.
+    fn causes(&self) -> Vec<String> {
+        let mut causes = Vec::new();
+        let mut source = std::error::Error::source(self);
+
+        while let Some(cause) = source {
+            causes.push(cause.to_string());
+            source = cause.source();
+        }
+        causes
     }
 }
 
@@ -129,6 +177,43 @@ mod tests {
             Error::Other(anyhow::anyhow!("boom")).exit_code(),
             exit::FAILURE
         );
+    }
+
+    #[test]
+    fn every_category_has_a_slug_and_a_code() {
+        let errors = [
+            Error::NotFound {
+                kind: "project",
+                name: "dev".into(),
+            },
+            Error::NoConfigDir,
+            Error::Database("locked".into()),
+            Error::Archive("no room".into()),
+            Error::Interrupted,
+            Error::Io(std::io::Error::other("boom")),
+            Error::Other(anyhow::anyhow!("boom")),
+        ];
+
+        for err in errors {
+            let kind = err.kind();
+            assert!(!kind.is_empty(), "{err} has no slug");
+            assert!(
+                kind.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "`{kind}` is not a stable slug"
+            );
+        }
+    }
+
+    #[test]
+    fn a_json_report_carries_the_whole_source_chain() {
+        let err = Error::ConfigRead {
+            path: PathBuf::from("/etc/pmanager.toml"),
+            source: std::io::Error::other("disk on fire"),
+        };
+
+        assert_eq!(err.causes(), ["disk on fire"]);
+        assert_eq!(err.kind(), "config");
+        assert_eq!(err.exit_code(), exit::CONFIG);
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::archive::human_bytes;
 use crate::commands::Context;
 use crate::error::Result;
 use crate::git;
+use crate::json;
 use crate::lifecycle::{self, State, Survey};
 use crate::scan;
 
@@ -36,11 +37,14 @@ struct Row {
     name: String,
     path: std::path::PathBuf,
     state: State,
+    /// What the EDITED column reports, and the moment behind it.
     edited: String,
+    edited_at: Option<std::time::SystemTime>,
     committed: String,
     notes: Vec<String>,
     survey: Survey,
     stale: bool,
+    archive: Option<crate::db::ArchiveRecord>,
 }
 
 pub fn run(args: &Args, ctx: &Context) -> Result<()> {
@@ -53,6 +57,14 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     let projects = db.projects()?;
 
     if projects.is_empty() {
+        // Nothing tracked is an empty listing rather than a special case: a
+        // caller parsing `projects` has one shape to handle, not two.
+        if ctx.is_json() {
+            return json::emit(&json::Listing {
+                projects: Vec::new(),
+                summary: summary(&[], 0, 0),
+            });
+        }
         if !ctx.is_quiet() {
             writeln!(out, "no projects tracked yet")?;
             writeln!(out, "track one with `pmanager project add <PROJECT>`")?;
@@ -68,13 +80,12 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
         freed_total += record.freed_bytes;
 
         // An archived project has no files to date, so use when it was archived.
-        let edited = match (record.state, &survey.last_edit) {
-            (State::Archived, _) => record
-                .archived_at
-                .map_or_else(|| "—".into(), |at| scan::time_ago(scan::from_epoch(at))),
-            (_, Some(edit)) => scan::time_ago(edit.at),
-            (_, None) => "—".to_string(),
+        let edited_at = match (record.state, &survey.last_edit) {
+            (State::Archived, _) => record.archived_at.map(scan::from_epoch),
+            (_, Some(edit)) => Some(edit.at),
+            (_, None) => None,
         };
+        let edited = edited_at.map_or_else(|| "—".to_string(), scan::time_ago);
 
         let committed = survey
             .git
@@ -96,14 +107,23 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
             path: record.path.clone(),
             state: record.state,
             edited,
+            edited_at,
             committed,
             notes: notes(record, &survey, stale, thresholds.trim_days),
             survey,
             stale,
+            archive: record.archive.clone(),
         });
     }
 
     let shown: Vec<&Row> = rows.iter().filter(|row| args.shows(row)).collect();
+
+    if ctx.is_json() {
+        return json::emit(&json::Listing {
+            projects: shown.iter().map(|row| row.as_json()).collect(),
+            summary: summary(&rows, shown.len(), freed_total),
+        });
+    }
 
     if shown.is_empty() {
         writeln!(out, "no projects match")?;
@@ -137,6 +157,61 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
 
     summarize(&mut out, &rows, shown.len(), freed_total)?;
     Ok(())
+}
+
+impl Row {
+    /// This row as `--json` reports it.
+    fn as_json(&self) -> json::ListedProject {
+        json::ListedProject {
+            name: self.name.clone(),
+            path: json::path(&self.path),
+            state: self.state.as_str(),
+            present: self.survey.present,
+            edited: self.edited_at.map(json::Time::at),
+            committed: self
+                .survey
+                .git
+                .head
+                .as_ref()
+                .map(|head| json::Time::at(head.at)),
+            stale: self.stale,
+            reclaimable_bytes: self.survey.purgeable_bytes(),
+            archive: self.archive.as_ref().map(json::Archive::new),
+            git: json::Git::new(&self.survey.git),
+            notes: self.notes.clone(),
+        }
+    }
+}
+
+/// The counts under the table, which `--json` reports as one object.
+fn summary(rows: &[Row], shown: usize, freed_total: u64) -> json::ListSummary {
+    let count = |state: State| rows.iter().filter(|row| row.state == state).count();
+
+    json::ListSummary {
+        tracked: rows.len(),
+        shown,
+        active: count(State::Active),
+        trimmed: count(State::Trimmed),
+        archived: count(State::Archived),
+        reclaimable_bytes: reclaimable(rows),
+        freed_bytes: freed_total,
+        missing_folders: rows.iter().filter(|row| row.is_missing()).count(),
+    }
+}
+
+impl Row {
+    /// Whether the folder should be there and is not.
+    fn is_missing(&self) -> bool {
+        self.state != State::Archived && !self.path.is_dir()
+    }
+}
+
+/// Bytes sitting in dependency trees, across everything not archived.
+fn reclaimable(rows: &[Row]) -> u64 {
+    rows.iter()
+        .filter(|row| row.state != State::Archived)
+        .map(|row| row.survey.purgeable_bytes())
+        .sum()
 }
 
 impl Args {
@@ -215,11 +290,7 @@ fn summarize(
     freed_total: u64,
 ) -> std::io::Result<()> {
     let count = |state: State| rows.iter().filter(|row| row.state == state).count();
-    let reclaimable: u64 = rows
-        .iter()
-        .filter(|row| row.state != State::Archived)
-        .map(|row| row.survey.purgeable_bytes())
-        .sum();
+    let reclaimable = reclaimable(rows);
 
     writeln!(out)?;
     writeln!(
@@ -248,10 +319,7 @@ fn summarize(
     }
 
     // Only worth saying while there is something to point at.
-    if rows
-        .iter()
-        .any(|row| !row.path.is_dir() && row.state != State::Archived)
-    {
+    if rows.iter().any(Row::is_missing) {
         writeln!(
             out,
             "some folders are missing; `pmanager project prune` clears them out"
