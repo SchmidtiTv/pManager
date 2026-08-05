@@ -17,6 +17,7 @@ Getting started:
   pmanager run                           See what has aged out (changes nothing)
   pmanager run --yes                     Carry it out
   pmanager schedule install              …every day at 03:00
+  pmanager completions --help            Complete commands as you type them
 
 How a project ages:
   active   ──60 days idle──▶  trimmed   node_modules deleted; `npm install` undoes it
@@ -160,6 +161,9 @@ pub enum Command {
 
     /// Install or remove the scheduled daily run
     Schedule(crate::commands::schedule::Args),
+
+    /// Print the shell completion script for the given shell
+    Completions(crate::commands::completions::Args),
 }
 
 #[cfg(test)]

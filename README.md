@@ -38,6 +38,7 @@ pmanager list                             # see them all
 pmanager run                              # see what has aged out (changes nothing)
 pmanager run --yes                        # carry it out
 pmanager schedule install                 # …every day at 03:00
+pmanager completions powershell           # complete commands as you type them
 ```
 
 ## Usage
@@ -60,6 +61,7 @@ pmanager [OPTIONS] <COMMAND>
 | `schedule install` | Register the daily run with Windows Task Scheduler |
 | `schedule uninstall` | Remove the scheduled task |
 | `schedule status` | Show the scheduled task |
+| `completions [SHELL]` | Print the shell completion script |
 
 A `<PROJECT>` is a path or the name shown by `pmanager list` — the name is how
 you reach an archived project, whose folder is not there to point at.
@@ -348,6 +350,38 @@ it again. An explicit `--config` is carried into the task.
 On non-Windows platforms these commands report that Task Scheduler is not
 available; run `pmanager run --yes` from cron or a systemd timer instead.
 
+## Shell completions
+
+`pmanager completions <SHELL>` writes a completion script to stdout. Put it
+where your shell looks for one:
+
+```powershell
+pmanager completions powershell >> $PROFILE
+```
+
+```sh
+pmanager completions bash > ~/.local/share/bash-completion/completions/pmanager
+pmanager completions zsh  > ~/.zfunc/_pmanager     # ~/.zfunc on $fpath
+pmanager completions fish > ~/.config/fish/completions/pmanager.fish
+pmanager completions elvish >> ~/.config/elvish/rc.elv
+```
+
+Then start a new shell: these files are read once, at startup. To try it
+without installing anything, `eval "$(pmanager completions bash)"`.
+
+Omit the shell and it is guessed from the environment — handy in a profile
+that is shared between machines, though `$SHELL` is the login shell rather
+than the current one and is not set at all under PowerShell, so naming the
+shell is the reliable form.
+
+The script is generated from the same command line definition the binary
+parses with, so it always covers every current subcommand, flag and value —
+including `--state`'s values and the shells listed above. It is a snapshot of
+one version, though: regenerate it after upgrading pmanager.
+
+Completions never read the configuration file or the database, so a broken
+config cannot break the shell that runs this at startup.
+
 ## Database
 
 A single SQLite file, by default `pmanager.db` inside the platform data
@@ -456,6 +490,7 @@ src/
     project.rs        `pmanager project`
     restore.rs        `pmanager restore`
     schedule.rs       `pmanager schedule`
+    completions.rs    `pmanager completions`
 tests/
   cli.rs              end-to-end tests that run the built binary
 ```
