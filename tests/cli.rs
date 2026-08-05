@@ -1107,8 +1107,13 @@ fn info_reports_the_toolchain_and_what_it_would_delete() {
     let info = json_document(&config, &["info", "app"]);
     assert_eq!(info["toolchains"][0], "Gradle");
     assert_eq!(info["dependencies"]["bytes"], 2048);
-    assert_eq!(info["dependencies"]["trees"][0]["path"], "app/build");
     assert_eq!(info["dependencies"]["trees"][0]["files"], 1);
+    // Paths are spelled the way the platform spells them, so the expectation
+    // has to be built the same way rather than written out with slashes.
+    assert_eq!(
+        info["dependencies"]["trees"][0]["path"],
+        Path::new("app").join("build").display().to_string()
+    );
     assert_eq!(info["present"], true);
     assert_eq!(info["archive"], serde_json::Value::Null);
 }
