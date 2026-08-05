@@ -47,7 +47,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     let db = ctx.open_database()?;
     let config = ctx.config()?;
     let thresholds = config.thresholds()?;
-    let (skip, purge) = (config.skip_dirs(), config.purge_dirs());
+    let skip = config.skip_dirs();
 
     let mut out = std::io::stdout().lock();
     let projects = db.projects()?;
@@ -64,7 +64,7 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
     let mut freed_total = 0;
 
     for record in &projects {
-        let survey = lifecycle::survey(&record.path, &skip, &purge);
+        let survey = lifecycle::survey(&record.path, &skip, &config.purge_dirs(&record.path));
         freed_total += record.freed_bytes;
 
         // An archived project has no files to date, so use when it was archived.
