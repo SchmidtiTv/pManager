@@ -415,6 +415,91 @@ fn a_project_is_trimmed_by_the_toolchain_it_is_built_with() {
 }
 
 #[test]
+fn an_android_project_is_trimmed_of_everything_gradle_rebuilds() {
+    let (dir, config) = isolated();
+
+    // The shape Android Studio leaves behind: a Kotlin settings file at the
+    // root, one module, and build output several directories down.
+    let path = dir.path().join("android-studio-project-3");
+    let sources = [
+        ("settings.gradle.kts", "rootProject.name = \"Fieldbook\"\n"),
+        (
+            "build.gradle.kts",
+            "plugins { id(\"com.android.application\") }\n",
+        ),
+        (
+            "app/build.gradle.kts",
+            "android { namespace = \"dev.fieldbook\" }\n",
+        ),
+        ("app/src/main/kotlin/Main.kt", "fun main() {}\n"),
+        ("app/src/main/AndroidManifest.xml", "<manifest/>\n"),
+    ];
+    for (file, contents) in sources {
+        let file = path.join(file);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, contents).unwrap();
+    }
+
+    // …and what a build leaves behind, written today: an APK, Gradle's own
+    // caches, and the NDK's object files.
+    for output in [
+        "app/build/outputs/apk/debug/app-debug.apk",
+        "app/.cxx/Debug/arm64-v8a/libnative.so",
+        ".gradle/8.14/checksums/checksums.lock",
+        "build/reports/problems/problems-report.html",
+    ] {
+        let file = path.join(output);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "x".repeat(4096)).unwrap();
+    }
+
+    // A profiler recording is somebody's measurement, not build output.
+    let capture = path.join("captures/trace.hprof");
+    std::fs::create_dir_all(capture.parent().unwrap()).unwrap();
+    std::fs::write(&capture, "recorded by hand").unwrap();
+
+    let when = SystemTime::now() - Duration::from_secs(90 * 86_400);
+    for (file, _) in sources {
+        std::fs::File::options()
+            .write(true)
+            .open(path.join(file))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    // Named by its settings file rather than the folder it was checked out to.
+    track(&config, &path);
+    pmanager()
+        .args(["info", "Fieldbook", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Gradle"));
+
+    pmanager()
+        .args(["run", "--yes", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trimmed 4 dependency tree(s)"));
+
+    for gone in ["app/build", "app/.cxx", ".gradle", "build"] {
+        assert!(!path.join(gone).exists(), "{gone} is rebuilt by a build");
+    }
+    for kept in [
+        "app/src/main/kotlin/Main.kt",
+        "app/build.gradle.kts",
+        "captures/trace.hprof",
+    ] {
+        assert!(
+            path.join(kept).is_file(),
+            "{kept} is not Gradle's to rebuild"
+        );
+    }
+}
+
+#[test]
 fn a_project_of_no_known_toolchain_is_never_trimmed() {
     let (dir, config) = isolated();
 
