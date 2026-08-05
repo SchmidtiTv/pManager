@@ -85,6 +85,36 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
         regenerable: &["vendor"],
         churn: &[],
     },
+    // Java, Kotlin and Android all arrive through Gradle, so they are one
+    // entry rather than three: the manifests that identify them are the same
+    // pair of build scripts, and so are the directories they write.
+    //
+    // `build` is regenerable here even though Node keeps it in `churn`. Gradle
+    // reserves the name — every module gets one, `gradle clean` empties it, and
+    // in an Android project it is the largest thing on disk by far. The two
+    // meanings only meet in a repository whose root holds both a
+    // `package.json` and a `build.gradle`, where Gradle's reading wins.
+    //
+    // `.cxx` is where the Android Gradle plugin keeps NDK object files, and
+    // `captures` is where Android Studio drops profiler recordings — those are
+    // somebody's measurements, not build output, so they are never deleted.
+    Ecosystem {
+        name: "Gradle",
+        markers: &[
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        ],
+        regenerable: &[".cxx", ".gradle", "build"],
+        churn: &[".idea", ".kotlin", "captures"],
+    },
+    Ecosystem {
+        name: "Maven",
+        markers: &["pom.xml"],
+        regenerable: &["target"],
+        churn: &[".idea"],
+    },
 ];
 
 /// Directories ignored when dating a project no matter what it is built with.
@@ -137,18 +167,21 @@ pub fn skip_dirs() -> Vec<String> {
     dirs
 }
 
-/// `package.json`'s name, falling back to the folder name. A broken manifest
-/// falls back rather than failing.
+/// What a project calls itself, falling back to the folder name. A broken or
+/// unreadable manifest falls back rather than failing.
 pub fn project_name(path: &Path) -> String {
-    let folder = || {
-        path.file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string())
-    };
+    node_name(path)
+        .or_else(|| gradle_name(path))
+        .unwrap_or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        })
+}
 
-    let Ok(manifest) = std::fs::read_to_string(path.join("package.json")) else {
-        return folder();
-    };
+/// `package.json`'s `name`, when it has a usable one.
+fn node_name(path: &Path) -> Option<String> {
+    let manifest = std::fs::read_to_string(path.join("package.json")).ok()?;
 
     serde_json::from_str::<serde_json::Value>(&manifest)
         .ok()
@@ -157,7 +190,40 @@ pub fn project_name(path: &Path) -> String {
         .and_then(serde_json::Value::as_str)
         .filter(|name| !name.trim().is_empty())
         .map(str::to_string)
-        .unwrap_or_else(folder)
+}
+
+/// The `rootProject.name` a Gradle settings file assigns.
+///
+/// Gradle projects are routinely checked out into a folder named nothing like
+/// the build — `MyApp` in `~/AndroidStudioProjects/myapp-2` — so the settings
+/// file is worth reading. Only a quoted literal is taken; anything else is an
+/// expression that would need Gradle itself to evaluate.
+fn gradle_name(path: &Path) -> Option<String> {
+    for settings in ["settings.gradle", "settings.gradle.kts"] {
+        let Ok(contents) = std::fs::read_to_string(path.join(settings)) else {
+            continue;
+        };
+        if let Some(name) = contents.lines().find_map(root_project_name) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// The name in `rootProject.name = "app"`, if `line` is that assignment.
+/// Groovy and Kotlin write it identically, apart from Groovy's single quotes.
+fn root_project_name(line: &str) -> Option<String> {
+    let value = line
+        .trim_start()
+        .strip_prefix("rootProject.name")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim_start();
+
+    let quote = value.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let name = value[quote.len_utf8()..].split(quote).next()?.trim();
+
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// The most recently modified file under a project.
@@ -384,6 +450,49 @@ mod tests {
     }
 
     #[test]
+    fn a_jvm_project_is_trimmed_by_the_build_tool_that_drives_it() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Kotlin, Java and Android are the same entry: what identifies them is
+        // the build script, and what they write is Gradle's.
+        for marker in [
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        ] {
+            let project = dir.path().join(marker.replace('.', "-"));
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(marker), "").unwrap();
+
+            let names: Vec<&str> = ecosystems(&project).iter().map(|e| e.name).collect();
+            assert_eq!(names, ["Gradle"], "for {marker}");
+            assert_eq!(regenerable_dirs(&project), [".cxx", ".gradle", "build"]);
+        }
+
+        let maven = dir.path().join("service");
+        std::fs::create_dir_all(&maven).unwrap();
+        std::fs::write(maven.join("pom.xml"), "<project/>").unwrap();
+        assert_eq!(regenerable_dirs(&maven), ["target"]);
+    }
+
+    #[test]
+    fn an_android_studio_recording_is_never_deleted() {
+        // `captures` holds profiler recordings somebody made by hand, and
+        // `.idea` is the IDE's own state. Both churn without being work, and
+        // neither is something a build puts back.
+        let gradle = ECOSYSTEMS
+            .iter()
+            .find(|eco| eco.name == "Gradle")
+            .expect("the table has a Gradle entry");
+
+        for dir in ["captures", ".idea", ".kotlin"] {
+            assert!(gradle.churn.contains(&dir), "{dir} should be churn");
+            assert!(!gradle.regenerable.contains(&dir), "{dir} is not rebuilt");
+        }
+    }
+
+    #[test]
     fn a_polyglot_project_is_trimmed_by_each_of_its_toolchains() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("package.json"), "{}").unwrap();
@@ -483,6 +592,57 @@ mod tests {
             r#"{"name": "@acme/api", "version": "1.0.0"}"#,
         );
         assert_eq!(project_name(dir.path()), "@acme/api");
+    }
+
+    #[test]
+    fn a_gradle_project_is_named_by_its_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        write(
+            dir.path(),
+            "settings.gradle",
+            "rootProject.name = 'my-app'\n",
+        );
+        assert_eq!(project_name(dir.path()), "my-app");
+
+        // Kotlin's settings file, and a name that is not the folder's.
+        let kts = dir.path().join("app");
+        write(
+            &kts,
+            "settings.gradle.kts",
+            "pluginManagement { repositories { google() } }\n\
+             rootProject.name = \"My Android App\"\n\
+             include(\":app\")\n",
+        );
+        assert_eq!(project_name(&kts), "My Android App");
+
+        // A Gradle build inside a Node repository still answers to its
+        // `package.json`: that is the manifest a human would name it by.
+        write(dir.path(), "package.json", r#"{"name": "@acme/mobile"}"#);
+        assert_eq!(project_name(dir.path()), "@acme/mobile");
+    }
+
+    #[test]
+    fn a_gradle_name_that_is_not_a_literal_falls_back_to_the_folder_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        for settings in [
+            // Evaluating any of these would take Gradle itself.
+            "rootProject.name = property('appName')\n",
+            "rootProject.name = \"\"\n",
+            "include(':app')\n",
+            "rootProject.nameOfSomethingElse = 'nope'\n",
+            "",
+        ] {
+            write(dir.path(), "settings.gradle", settings);
+            assert_eq!(project_name(dir.path()), folder, "for {settings:?}");
+        }
     }
 
     #[test]
