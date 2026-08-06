@@ -52,9 +52,11 @@ pub struct Config {
     /// [`lifecycle::DEFAULT_FORCE_ARCHIVE_DAYS`].
     pub force_archive_days: Option<u32>,
 
-    /// Directories that pManager deletes when trimming, and leaves out of an
-    /// archive. Defaults to whatever each project's own toolchains can rebuild
-    /// — see [`scan::ECOSYSTEMS`].
+    /// Directories that pManager deletes when trimming. Defaults to whatever
+    /// each project's own toolchains can rebuild — see [`scan::ECOSYSTEMS`].
+    ///
+    /// Archives leave these out and build output besides; see
+    /// [`Self::archive_exclude_dirs`].
     pub purge_dirs: Option<Vec<String>>,
 
     /// Directories not counted when looking for a project's last edit.
@@ -175,6 +177,26 @@ impl Config {
         self.purge_dirs
             .clone()
             .unwrap_or_else(|| scan::regenerable_dirs(project))
+    }
+
+    /// Directories an archive of `project` leaves out.
+    ///
+    /// Everything [`Self::purge_dirs`] would delete, plus the build output
+    /// that trimming leaves on disk: a compiled copy of the sources is not
+    /// worth storing beside the sources.
+    ///
+    /// A configured `purge_dirs` replaces the deletable half, as it does
+    /// everywhere else, but not the build output — that list is about what is
+    /// worth storing, which naming a dependency directory says nothing about.
+    pub fn archive_exclude_dirs(&self, project: &Path) -> Vec<String> {
+        let mut dirs = self.purge_dirs(project);
+
+        for dir in scan::derived_dirs(project) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs
     }
 
     /// Directories ignored when dating a project.
@@ -422,6 +444,46 @@ mod tests {
         assert!(skip.contains(&"artifacts".to_string()), "{skip:?}");
         assert!(skip.contains(&"node_modules".to_string()), "{skip:?}");
         assert!(skip.contains(&".git".to_string()), "{skip:?}");
+    }
+
+    /// Naming the directories to delete says what is disposable, not what is
+    /// worth storing — so an override replaces the one list and leaves the
+    /// build output still being left out.
+    #[test]
+    fn naming_the_dirs_to_delete_does_not_start_archiving_build_output() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+
+        let config = Config {
+            purge_dirs: Some(vec!["artifacts".into()]),
+            ..Config::default()
+        };
+
+        // The override is what gets deleted, in place of `node_modules`.
+        assert_eq!(config.purge_dirs(dir.path()), ["artifacts"]);
+
+        let excluded = config.archive_exclude_dirs(dir.path());
+        assert!(excluded.contains(&"artifacts".to_string()), "{excluded:?}");
+        assert!(excluded.contains(&"dist".to_string()), "{excluded:?}");
+        assert!(
+            !excluded.contains(&"node_modules".to_string()),
+            "the override replaced it: {excluded:?}"
+        );
+    }
+
+    /// With nothing configured, an archive leaves out both lists.
+    #[test]
+    fn an_archive_leaves_out_what_is_trimmed_and_what_is_built() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+
+        let excluded = Config::default().archive_exclude_dirs(dir.path());
+        assert!(
+            excluded.contains(&"node_modules".to_string()),
+            "{excluded:?}"
+        );
+        assert!(excluded.contains(&"dist".to_string()), "{excluded:?}");
+        assert!(excluded.contains(&"coverage".to_string()), "{excluded:?}");
     }
 
     #[test]
