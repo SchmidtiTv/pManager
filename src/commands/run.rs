@@ -231,8 +231,9 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
             level,
             threads,
             // What pManager will delete is what it refuses to store: a
-            // dependency tree rebuilds from the files beside it.
-            exclude: purge,
+            // dependency tree rebuilds from the files beside it. Build output
+            // is left out for the same reason, though it is not deleted.
+            exclude: config.archive_exclude_dirs(&record.path),
             overwrite: args.force,
         };
 
@@ -440,9 +441,29 @@ fn visit(
                 totals.archived += 1;
                 outcome.changed = true;
 
-                // Only a deleted folder gives anything back.
+                // A kept folder still holds the dependency trees the archive
+                // refused to store, and nothing else will ever come back for
+                // them: the project is archived, so no later run trims it.
+                // Deleting them now is what makes `--keep-source` free space.
+                //
+                // After the archive, never before — a failed compression has
+                // to leave the project exactly as it was found.
+                let trimmed = if args.keep_source && !survey.purgeable.is_empty() {
+                    let _spinner =
+                        Spinner::start(ctx.shows_progress(), format!("trimming {}", record.name));
+                    let result = lifecycle::trim(&survey.purgeable);
+                    for (path, err) in &result.failed {
+                        notes.push(format!("could not remove {}: {err}", path.display()));
+                    }
+                    result
+                } else {
+                    lifecycle::Trimmed::default()
+                };
+
+                // A deleted folder gives back everything it held; a kept one,
+                // only what was just trimmed out of it.
                 let freed = if args.keep_source {
-                    0
+                    trimmed.freed
                 } else {
                     summary.source_bytes.saturating_sub(summary.archive_bytes)
                 };
@@ -465,7 +486,18 @@ fn visit(
                     human_bytes(summary.source_bytes),
                     human_bytes(summary.archive_bytes),
                     if args.keep_source {
-                        ", folder kept".to_string()
+                        format!(
+                            ", folder kept{}",
+                            if trimmed.removed > 0 {
+                                format!(
+                                    ", trimmed {} dependency tree(s) from it, freed {}",
+                                    trimmed.removed,
+                                    human_bytes(freed)
+                                )
+                            } else {
+                                String::new()
+                            }
+                        )
                     } else {
                         format!(", freed {}", human_bytes(freed))
                     }
