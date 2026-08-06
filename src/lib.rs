@@ -15,6 +15,7 @@ pub mod git;
 pub mod json;
 pub mod lifecycle;
 pub mod logging;
+pub mod progress;
 pub mod scan;
 
 pub use cli::Cli;
