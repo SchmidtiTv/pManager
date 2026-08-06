@@ -213,14 +213,22 @@ project can be worked on for a week without a single commit.
 
 ### What is never thrown away
 
-The archive holds **everything except the purge directories** — including
-`.git`. History, stashes, local branches and remotes all survive the round
-trip, because none of that is regenerable. Only the project's own dependency
-trees, and whatever else you add to `purge_dirs`, are left out, on the grounds
-that one command rebuilds them.
+The archive holds **everything except what a rebuild would put back** —
+including `.git`. History, stashes, local branches and remotes all survive the
+round trip, because none of that is regenerable. Two things are left out:
 
-The rule is a single one, and it runs in both directions: **what pManager is
-willing to delete is exactly what it refuses to store.**
+- **dependency trees** — `node_modules`, `target`, `.venv`, and whatever else
+  you add to `purge_dirs`. One command rebuilds them.
+- **build output** — `dist`, `build`, `out`, `coverage`, `.next`, `.turbo`,
+  `.pytest_cache` and their kin. Building the stored sources reproduces them.
+
+Editor settings and profiler recordings (`.idea`, `.kotlin`, `captures`) are
+stored, even though the toolchain wrote them: no build puts those back.
+
+The two lists differ in what happens on disk, not in the archive. A dependency
+tree is deleted when trimming; build output is only skipped. Deleting it would
+mean guessing that nobody still wants the build that is sitting there, and
+unlike a dependency tree there is no one command that restores it.
 
 ### What protects the archived projects
 
@@ -237,6 +245,11 @@ archive of that name already exists, the project is skipped rather than
 overwritten; pass `--force` when you do want it replaced. Use `--keep-source`
 for a first run if you would rather inspect the archives before trusting the
 deletion.
+
+`--keep-source` still trims the folder it keeps, once the archive is written
+and verified. The archive already holds a recipe for the dependency trees, and
+no later run will trim a project that is archived, so it happens then or never.
+The sources stay exactly where they are.
 
 One project failing does not stop the others: an unplugged drive is reported,
 the remaining projects are still swept, and the run ends with a non-zero exit
@@ -552,7 +565,7 @@ is an error. Unknown keys are rejected so typos surface immediately.
 | `trim_days` | `60` | Days idle before the dependency trees go |
 | `archive_days` | `180` | Days idle before the project is compressed |
 | `force_archive_days` | `240` | Days idle before unfinished work stops holding it back |
-| `purge_dirs` | the project's own toolchains | Deleted when trimming; kept out of archives |
+| `purge_dirs` | the project's own toolchains | Deleted when trimming; kept out of archives. Build output is kept out too, whatever this is set to |
 | `skip_dirs` | see `ECOSYSTEMS` in `src/scan.rs` | Not counted when dating a project |
 | `archive_dir` | beside each project | Where archives are written |
 | `install_command` | `npm install` when there is a `package.json` | Run by `restore` |

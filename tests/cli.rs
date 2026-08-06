@@ -739,6 +739,90 @@ fn a_restored_project_is_not_archived_straight_back() {
     assert!(dir.path().join("dashboard").is_dir());
 }
 
+/// Build output is reproduced by building the sources stored beside it, so
+/// spending archive space on it is waste. What no build puts back is stored.
+#[test]
+fn an_archive_leaves_out_what_a_build_would_put_back() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "dashboard", 400);
+
+    let long_ago = SystemTime::now() - Duration::from_secs(400 * 86_400);
+    for (folder, file) in [
+        ("dist", "bundle.js"),
+        ("coverage", "report.html"),
+        ("docs", "design.md"),
+    ] {
+        std::fs::create_dir_all(path.join(folder)).unwrap();
+        let file = path.join(folder).join(file);
+        std::fs::write(&file, "x".repeat(2048)).unwrap();
+        // `docs` is nobody's build directory, so a fresh timestamp there would
+        // date the project as worked on and it would never be archived.
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+    }
+    track(&config, &path);
+
+    pmanager()
+        .args(["run", "--yes", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+
+    let into = dir.path().join("back");
+    std::fs::create_dir_all(&into).unwrap();
+    pmanager()
+        .args(["restore", "dashboard", "--no-install", "--into"])
+        .arg(&into)
+        .args(["--config"])
+        .arg(&config)
+        .assert()
+        .success();
+
+    let restored = into.join("dashboard");
+    assert!(restored.join("package.json").is_file());
+    assert!(restored.join("src/index.js").is_file());
+    // Not a build: nothing would put it back.
+    assert!(restored.join("docs/design.md").is_file());
+
+    assert!(!restored.join("node_modules").exists(), "a dependency tree");
+    assert!(!restored.join("dist").exists(), "build output");
+    assert!(!restored.join("coverage").exists(), "build output");
+}
+
+/// A kept folder is the one case where archiving leaves the rebuildable
+/// directories behind: no later run will trim a project that is already
+/// archived, so it happens here or never.
+#[test]
+fn keeping_the_source_still_reclaims_what_the_archive_refused_to_store() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "dashboard", 400);
+    assert!(path.join("node_modules/left-pad").is_dir());
+
+    pmanager()
+        .args(["run", "--yes", "--keep-source", "--config"])
+        .arg(&config)
+        .assert()
+        .success();
+    track(&config, &path);
+
+    pmanager()
+        .args(["run", "--yes", "--keep-source", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("folder kept"))
+        .stdout(predicate::str::contains("trimmed 1 dependency tree(s)"));
+
+    // The sources stay; only what the archive already holds a recipe for goes.
+    assert!(path.join("package.json").is_file());
+    assert!(path.join("src/index.js").is_file());
+    assert!(!path.join("node_modules").exists());
+}
+
 #[test]
 fn keep_source_writes_the_archive_but_leaves_the_project() {
     let (dir, config) = isolated();

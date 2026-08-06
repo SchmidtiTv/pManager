@@ -20,15 +20,24 @@ pub struct Ecosystem {
     /// Files at the project root that say a project is built with it. Any one
     /// of them is enough.
     pub markers: &'static [&'static str],
-    /// Directories the toolchain rebuilds from the files beside them. These
-    /// are what trimming deletes and what an archive leaves out — the two are
-    /// the same set on purpose: what pManager is willing to delete is what it
+    /// Directories the toolchain rebuilds by installing what the manifest
+    /// beside them asks for. These are what trimming deletes and what an
+    /// archive leaves out: what pManager is willing to delete is what it
     /// refuses to spend space storing.
     pub regenerable: &'static [&'static str],
-    /// Directories the toolchain writes to on its own. Ignored when dating a
-    /// project — a build is not somebody working — but never deleted, because
-    /// pManager cannot tell a build output from something hand-made that
-    /// happens to share the name.
+    /// Build output: written by the toolchain, and reproduced by building the
+    /// sources that travel into the archive beside it.
+    ///
+    /// Left out of archives for the same reason as `regenerable` — storing a
+    /// compiled copy of the sources next to the sources is waste. Not deleted
+    /// from disk, though, which is the difference: a build that is still on
+    /// disk is a build somebody may still be using, and unlike a dependency
+    /// tree there is no one command that puts it back.
+    pub derived: &'static [&'static str],
+    /// Directories the toolchain writes to on its own that are neither.
+    /// Ignored when dating a project — a build is not somebody working — but
+    /// both stored and kept, because they hold things no build reproduces:
+    /// editor settings, profiler recordings, somebody's own measurements.
     pub churn: &'static [&'static str],
 }
 
@@ -40,23 +49,30 @@ impl Ecosystem {
             .any(|marker| project.join(marker).is_file())
     }
 
-    /// Every directory this toolchain writes, regenerable or not.
+    /// Every directory this toolchain writes, whatever becomes of it.
     fn writes(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.regenerable.iter().chain(self.churn).copied()
+        self.regenerable
+            .iter()
+            .chain(self.derived)
+            .chain(self.churn)
+            .copied()
     }
 }
 
 /// The toolchains pManager recognises.
 ///
 /// A directory belongs in `regenerable` only if the ecosystem's own tooling
-/// puts it back from the files that travel into the archive beside it. Anything
-/// else belongs in `churn`, where it costs a project nothing to be wrong about.
+/// puts it back from the files that travel into the archive beside it, since
+/// being wrong there deletes something for good. `derived` is the softer
+/// version of the same claim — rebuildable, so not worth archiving, but left
+/// on disk rather than deleted. Anything else belongs in `churn`, where it
+/// costs a project nothing to be wrong about.
 pub const ECOSYSTEMS: &[Ecosystem] = &[
     Ecosystem {
         name: "Node",
         markers: &["package.json"],
         regenerable: &["node_modules"],
-        churn: &[
+        derived: &[
             ".next",
             ".nuxt",
             ".svelte-kit",
@@ -66,23 +82,27 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
             "out",
             "coverage",
         ],
+        churn: &[],
     },
     Ecosystem {
         name: "Rust",
         markers: &["Cargo.toml"],
         regenerable: &["target"],
+        derived: &[],
         churn: &[],
     },
     Ecosystem {
         name: "Python",
         markers: &["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"],
         regenerable: &[".venv", "venv", "__pycache__"],
-        churn: &[".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox"],
+        derived: &[".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox"],
+        churn: &[],
     },
     Ecosystem {
         name: "Go",
         markers: &["go.mod"],
         regenerable: &["vendor"],
+        derived: &[],
         churn: &[],
     },
     // Java, Kotlin and Android all arrive through Gradle, so they are one
@@ -107,12 +127,14 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
             "settings.gradle.kts",
         ],
         regenerable: &[".cxx", ".gradle", "build"],
+        derived: &[],
         churn: &[".idea", ".kotlin", "captures"],
     },
     Ecosystem {
         name: "Maven",
         markers: &["pom.xml"],
         regenerable: &["target"],
+        derived: &[],
         churn: &[".idea"],
     },
 ];
@@ -143,6 +165,42 @@ pub fn regenerable_dirs(project: &Path) -> Vec<String> {
         .flat_map(|eco| eco.regenerable.iter().map(|dir| (*dir).to_string()))
         .collect();
 
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// Build output in `project`: rebuilt by building the sources beside it, so
+/// not worth storing, but not deleted either.
+///
+/// A directory any matched toolchain calls regenerable is left out, so that
+/// the stronger claim is the one that survives. `build` in a project that is
+/// both Node and Gradle is the case: Gradle's `regenerable` wins, and it is
+/// trimmed rather than merely skipped.
+pub fn derived_dirs(project: &Path) -> Vec<String> {
+    let matched = ecosystems(project);
+    let regenerable = regenerable_dirs(project);
+
+    let mut dirs: Vec<String> = matched
+        .iter()
+        .flat_map(|eco| eco.derived.iter().map(|dir| (*dir).to_string()))
+        .filter(|dir| !regenerable.contains(dir))
+        .collect();
+
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// Everything an archive of `project` leaves out: what trimming would delete,
+/// plus the build output that trimming leaves alone.
+///
+/// Both are reproducible from what does get stored, which is the only reason
+/// leaving them out is safe — for a project whose folder is then deleted, the
+/// archive is the last copy.
+pub fn archive_exclude_dirs(project: &Path) -> Vec<String> {
+    let mut dirs = regenerable_dirs(project);
+    dirs.extend(derived_dirs(project));
     dirs.sort();
     dirs.dedup();
     dirs
@@ -501,6 +559,81 @@ mod tests {
         let names: Vec<&str> = ecosystems(dir.path()).iter().map(|e| e.name).collect();
         assert_eq!(names, ["Node", "Rust"]);
         assert_eq!(regenerable_dirs(dir.path()), ["node_modules", "target"]);
+    }
+
+    /// Build output is worth leaving out of an archive but not worth deleting,
+    /// so it has to show up in one list and not the other.
+    #[test]
+    fn build_output_is_left_out_of_archives_without_being_trimmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = dir.path().join("site");
+        std::fs::create_dir_all(&node).unwrap();
+        std::fs::write(node.join("package.json"), "{}").unwrap();
+
+        assert_eq!(regenerable_dirs(&node), ["node_modules"]);
+        assert_eq!(
+            derived_dirs(&node),
+            [
+                ".next",
+                ".nuxt",
+                ".svelte-kit",
+                ".turbo",
+                "build",
+                "coverage",
+                "dist",
+                "out"
+            ]
+        );
+        assert_eq!(
+            archive_exclude_dirs(&node),
+            [
+                ".next",
+                ".nuxt",
+                ".svelte-kit",
+                ".turbo",
+                "build",
+                "coverage",
+                "dist",
+                "node_modules",
+                "out"
+            ]
+        );
+    }
+
+    /// `build` is Node's build output and Gradle's regenerable directory. In a
+    /// project that is both, the claim that deletes it has to win, or Gradle's
+    /// largest directory would survive every trim.
+    #[test]
+    fn a_directory_two_toolchains_disagree_about_takes_the_stronger_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("build.gradle"), "").unwrap();
+
+        assert!(regenerable_dirs(dir.path()).contains(&"build".to_string()));
+        assert!(
+            !derived_dirs(dir.path()).contains(&"build".to_string()),
+            "Gradle's reading should win, leaving `build` trimmable"
+        );
+        // Either way it stays out of the archive.
+        assert!(archive_exclude_dirs(dir.path()).contains(&"build".to_string()));
+    }
+
+    /// Settings and recordings are not builds. Nothing reproduces them, so
+    /// they are stored even though the toolchain wrote them.
+    #[test]
+    fn what_no_build_reproduces_is_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("build.gradle"), "").unwrap();
+
+        let excluded = archive_exclude_dirs(dir.path());
+        for kept in [".idea", ".kotlin", "captures"] {
+            assert!(
+                !excluded.contains(&kept.to_string()),
+                "{kept} should travel into the archive"
+            );
+            // Still not evidence that somebody was working, though.
+            assert!(skip_dirs().contains(&kept.to_string()));
+        }
     }
 
     #[test]
