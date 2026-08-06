@@ -41,38 +41,6 @@ pub const DEFAULT_LEVEL: u32 = 6;
 /// parallelize better. Clamped up to the dictionary size by the encoder.
 const MT_CHUNK_SIZE: u64 = 64 * 1024 * 1024;
 
-/// Uncompressed bytes a single LZMA2 stream may hold before it restarts.
-///
-/// LZMA2 is a sequence of chunks, and a chunk may reset the dictionary. The
-/// encoder normally runs one unbroken stream from the first byte to the last;
-/// this makes it start a fresh one every gigabyte instead.
-///
-/// The reason is a bug in the compressor. `lzma-rust2`'s match finder tracks
-/// positions as `i32` and renormalizes its lookup tables once a stream reaches
-/// `i32::MAX` — about 2 GiB in. Its vectorized renormalization clamps stale
-/// entries to zero; its scalar one subtracts with `saturating_sub`, which
-/// saturates at `i32::MIN` rather than at zero, and so leaves them holding
-/// positions around -2^31. (The scalar path is the fallback on CPUs without
-/// SIMD, and handles the unaligned head and tail of every table on the ones
-/// with it.) A lookup that lands on such an entry computes a match distance
-/// past `i32::MAX`, which wraps to negative and sails through the "is this
-/// within the dictionary" bound check; reading the match then indexes off the
-/// front of the window:
-///
-/// ```text
-/// panicked at lzma-rust2-0.18.0/src/lz/lz_encoder.rs:367:
-/// index out of bounds: the len is 12853521 but the index is 1624971702
-/// ```
-///
-/// Any project over ~2 GiB was hitting that. Restarting the stream every
-/// gigabyte keeps the position counter well clear of the overflow, and costs
-/// almost nothing: one dictionary reset per gigabyte came to 81 bytes on a
-/// 2.2 GiB stream, against a fixed compressor bug that loses the whole run.
-///
-/// Worth dropping once the compressor is fixed upstream (`normalize_scalar` in
-/// `src/lz/lz_encoder.rs` needs `max(0)`, as the SIMD paths beside it do).
-const MAX_STREAM_BYTES: u64 = 1024 * 1024 * 1024;
-
 /// How an archive should be built.
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -319,9 +287,7 @@ pub fn human_bytes(bytes: u64) -> String {
 ///
 /// This is why the release profile unwinds rather than aborts on panic.
 fn compress(source: &Path, dest: &Path, options: &Options) -> Result<()> {
-    guard(source, || {
-        write_archive(source, dest, options, MAX_STREAM_BYTES)
-    })
+    guard(source, || write_archive(source, dest, options))
 }
 
 /// Run `work`, turning a panic inside it into an [`Error::Archive`].
@@ -354,12 +320,9 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
 }
 
 /// Compress the tree. Split out so `create` can clean up after a failure.
-///
-/// `stream_bytes` is [`MAX_STREAM_BYTES`] in every real call and a parameter
-/// only so a test can force stream restarts without writing a gigabyte.
-fn write_archive(source: &Path, dest: &Path, options: &Options, stream_bytes: u64) -> Result<()> {
+fn write_archive(source: &Path, dest: &Path, options: &Options) -> Result<()> {
     let mut writer = ArchiveWriter::create(dest).map_err(archive_error)?;
-    writer.set_content_methods(vec![lzma2_options(options, stream_bytes).into()]);
+    writer.set_content_methods(vec![lzma2_options(options).into()]);
 
     // Pushing from the parent keeps the folder name in the archive; the filter
     // prunes every sibling, so nothing outside `source` is walked.
@@ -388,17 +351,12 @@ fn write_archive(source: &Path, dest: &Path, options: &Options, stream_bytes: u6
     Ok(())
 }
 
-fn lzma2_options(options: &Options, stream_bytes: u64) -> Lzma2Options {
+fn lzma2_options(options: &Options) -> Lzma2Options {
     let level = options.level.clamp(MIN_LEVEL, MAX_LEVEL);
     if options.threads > 1 {
-        // Worker chunks are already far below `MAX_STREAM_BYTES`, and each one
-        // is its own stream, so the multi-threaded encoder never gets near the
-        // overflow that cap exists for.
         Lzma2Options::from_level_mt(level, options.threads, MT_CHUNK_SIZE)
     } else {
-        // Asking for one thread is still the single-threaded encoder — this is
-        // the only way to hand it a chunk size, which is what we are after.
-        Lzma2Options::from_level_mt(level, 1, stream_bytes)
+        Lzma2Options::from_level(level)
     }
 }
 
@@ -758,55 +716,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("no files"), "{err}");
-    }
-
-    /// The stream cap that keeps the compressor clear of its position
-    /// overflow makes it restart the LZMA2 dictionary mid-archive. That is a
-    /// path the encoder does not otherwise take, so the archives it produces
-    /// have to be shown to still read back byte for byte.
-    ///
-    /// Level 0 so the dictionary is 256 KiB: the encoder clamps the cap up to
-    /// the dictionary size, and this keeps the test to a few megabytes instead
-    /// of the gigabyte a real run needs to restart even once.
-    #[test]
-    fn an_archive_whose_stream_restarts_still_reads_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("bulky");
-        std::fs::create_dir_all(&source).unwrap();
-
-        // Compressible, but varied enough that the encoder is doing real work
-        // across every restart rather than emitting one long run.
-        let mut body = Vec::with_capacity(4 << 20);
-        let mut seed = 0x1234_5678u32;
-        while body.len() < (4 << 20) {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let word = format!("{} ", seed % 4096);
-            body.extend_from_slice(word.as_bytes());
-        }
-        std::fs::write(source.join("data.txt"), &body).unwrap();
-
-        let options = Options {
-            level: 0,
-            ..Options::default()
-        };
-
-        // A cap far below the file: several restarts, not just the one.
-        let dest = dir.path().join("bulky.pArchived");
-        write_archive(&source, &dest, &options, 256 * 1024).unwrap();
-
-        let out = dir.path().join("restored");
-        sevenz_rust2::decompress_file(&dest, &out).unwrap();
-        assert_eq!(std::fs::read(out.join("bulky/data.txt")).unwrap(), body);
-
-        // Each restart throws the dictionary away, so a capped stream cannot
-        // compress as well as an unbroken one. If these ever match, the cap
-        // stopped taking effect and the round trip above proved nothing.
-        let whole = dir.path().join("whole.pArchived");
-        write_archive(&source, &whole, &options, MAX_STREAM_BYTES).unwrap();
-        assert!(
-            std::fs::metadata(&dest).unwrap().len() > std::fs::metadata(&whole).unwrap().len(),
-            "the stream cap did not restart anything"
-        );
     }
 
     /// Whatever the compressor panics with, the message it panicked with is
