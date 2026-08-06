@@ -16,6 +16,7 @@ use crate::db::{Database, ProjectRecord};
 use crate::error::{Error, Result};
 use crate::json;
 use crate::lifecycle::{self, Action, Policy, Survey, Thresholds};
+use crate::progress::Spinner;
 use crate::scan;
 
 #[derive(Debug, clap::Args)]
@@ -217,7 +218,13 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
         // Resolved per project: which directories are rebuildable depends on
         // what the project is built with.
         let purge = config.purge_dirs(&record.path);
-        let survey = lifecycle::survey(&record.path, &skip, &purge);
+        let survey = {
+            // Walking a large tree is the first thing that can take long
+            // enough to look like a hang, before anything has been printed.
+            let _spinner =
+                Spinner::start(ctx.shows_progress(), format!("scanning {}", record.name));
+            lifecycle::survey(&record.path, &skip, &purge)
+        };
         let action = lifecycle::decide(record.state, &survey, record.active_since(), &policy);
 
         let options = archive::Options {
@@ -377,7 +384,11 @@ fn visit(
             let count = dirs.len();
 
             if args.yes {
-                let result = lifecycle::trim(dirs);
+                let result = {
+                    let _spinner =
+                        Spinner::start(ctx.shows_progress(), format!("trimming {}", record.name));
+                    lifecycle::trim(dirs)
+                };
                 totals.freed += result.freed;
                 outcome.freed = result.freed;
 
@@ -417,8 +428,15 @@ fn visit(
                 totals.planned += 1;
                 format!("would archive to {}", destination.display())
             } else {
-                let summary =
-                    lifecycle::archive(&record.path, destination, options, args.keep_source)?;
+                // The slow one, and the reason this module has a spinner at
+                // all: compression is a single call that can run for minutes.
+                // The spinner is dropped — and its line erased — before the
+                // result is printed below.
+                let summary = {
+                    let _spinner =
+                        Spinner::start(ctx.shows_progress(), format!("archiving {}", record.name));
+                    lifecycle::archive(&record.path, destination, options, args.keep_source)?
+                };
                 totals.archived += 1;
                 outcome.changed = true;
 

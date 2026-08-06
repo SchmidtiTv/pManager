@@ -60,6 +60,18 @@ impl Context {
         !self.globals.quiet && !self.globals.json
     }
 
+    /// Whether slow work should animate a spinner while it runs.
+    ///
+    /// Everything that silences prose silences this too, and two more things
+    /// do. A redirected stderr would keep the carriage returns as literal
+    /// bytes, so a scheduled run's log would fill with half-drawn spinners
+    /// rather than showing none. And `-v` puts tracing on the same stream,
+    /// where log lines and a spinner would overwrite each other; asking for
+    /// logs is asking for the logs to be readable.
+    pub fn shows_progress(&self) -> bool {
+        self.prints_text() && self.globals.verbose == 0 && crate::progress::stderr_is_interactive()
+    }
+
     /// The loaded configuration, read from disk on first call.
     pub fn config(&self) -> Result<&Config> {
         self.load().map(|(config, _)| config)
