@@ -63,7 +63,7 @@ pmanager [OPTIONS] <COMMAND>
 | `project remove <PROJECT>` | Stop tracking one; nothing on disk is touched |
 | `project prune` | Stop tracking projects whose folder is gone |
 | `restore <PROJECT>` | Extract an archived project and put it back to work |
-| `schedule install` | Register the daily run with Windows Task Scheduler |
+| `schedule install` | Register the daily run with the platform scheduler (Task Scheduler / launchd) |
 | `schedule uninstall` | Remove the scheduled task |
 | `schedule status` | Show the scheduled task |
 | `completions [SHELL]` | Print the shell completion script |
@@ -454,7 +454,8 @@ nothing to migrate, and renaming an old archive by hand is unnecessary.
 ## Scheduling the daily run
 
 pManager has no resident daemon. `schedule install` hands `pmanager run --yes`
-to Windows Task Scheduler, which already knows how to run something daily,
+to the platform's own scheduler — Task Scheduler on Windows, a per-user
+`launchd` agent on macOS — which already knows how to run something daily,
 survive reboots and record the outcome.
 
 ```sh
@@ -473,7 +474,14 @@ The task is named `pManager daily sweep` (`--name` changes it) and runs the
 executable at its current path, so move the binary and you will want to install
 it again. An explicit `--config` is carried into the task.
 
-On non-Windows platforms these commands report that Task Scheduler is not
+On macOS, `schedule install` writes a LaunchAgent plist to
+`~/Library/LaunchAgents` and registers it with `launchctl bootstrap`; `status`
+reports whether it is loaded, and `uninstall` runs `launchctl bootout` and
+removes the file. Since launchd keeps no history of its own the way Task
+Scheduler does, the agent's stdout and stderr are also captured to
+`schedule.log` in the data directory (see [Database](#database)).
+
+On any other platform these commands report that neither scheduler is
 available; run `pmanager run --yes` from cron or a systemd timer instead.
 
 ## Shell completions
