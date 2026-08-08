@@ -599,6 +599,7 @@ project, from the manifest sitting at its root:
 | Go | `go.mod` | `vendor` |
 | Gradle | `build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts` | `build`, `.gradle`, `.cxx` |
 | Maven | `pom.xml` | `target` |
+| C/C++ | `CMakeLists.txt`, `CMakePresets.json`, `meson.build`, `configure.ac`, `Makefile`, `GNUmakefile`, `conanfile.txt`, `conanfile.py`, `vcpkg.json` | `vcpkg_installed` |
 
 So a machine holding all six needs no configuration at all, and a `target`
 directory with no `Cargo.toml` beside it is never touched — pManager only
@@ -644,6 +645,21 @@ you want `restore` to run it:
 ```toml
 install_command = ["./gradlew", "--refresh-dependencies"]
 ```
+
+### C and C++
+
+There is no one C++ build system, so the markers are the build systems: CMake,
+Meson, Autotools, plain `make`, and the two package managers that sit on top of
+them. Any of them at the root is enough.
+
+Almost nothing here is trimmed, and that is the answer rather than a gap. A
+CMake `build` directory is not a dependency tree — the flags it was configured
+with live in the `CMakeCache.txt` inside it, so deleting it does not cost a
+rebuild, it costs knowing what to rebuild. So `build`, `builddir`, `_build`,
+`out` and CLion's `cmake-build-debug` and `cmake-build-release` are left where
+they are and kept out of archives, which is where the space is won anyway. The
+one exception is `vcpkg_installed`, a dependency tree in the ordinary sense:
+`vcpkg.json` says what belongs in it and `vcpkg install` puts it back.
 
 Setting `purge_dirs` turns the detection off and applies your list to every
 project as written, which is how to name something pManager does not know

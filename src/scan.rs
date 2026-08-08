@@ -177,6 +177,43 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
         derived: &[],
         churn: &[".idea"],
     },
+    // C and C++ have no one build system, so the markers are the build systems:
+    // CMake, Meson, Autotools and a plain makefile all describe the same kind
+    // of project and all write their output to the same handful of names.
+    //
+    // Almost nothing here is regenerable, and that is the honest answer rather
+    // than a gap. A CMake `build` directory is not a dependency tree: the flags
+    // it was configured with live in the `CMakeCache.txt` inside it, so
+    // deleting it does not cost a rebuild, it costs knowing what to rebuild.
+    // That makes it `derived` — left on disk, kept out of archives. The one
+    // exception is `vcpkg_installed`, which is a dependency tree in the
+    // ordinary sense: `vcpkg.json` says what belongs in it and `vcpkg install`
+    // puts it back.
+    Ecosystem {
+        name: "C/C++",
+        markers: &[
+            "CMakeLists.txt",
+            "CMakePresets.json",
+            "meson.build",
+            "configure.ac",
+            "Makefile",
+            "GNUmakefile",
+            "conanfile.txt",
+            "conanfile.py",
+            "vcpkg.json",
+        ],
+        marker_extensions: &[],
+        regenerable: &["vcpkg_installed"],
+        derived: &[
+            "_build",
+            "build",
+            "builddir",
+            "cmake-build-debug",
+            "cmake-build-release",
+            "out",
+        ],
+        churn: &[],
+    },
 ];
 
 /// Directories ignored when dating a project no matter what it is built with.
@@ -587,6 +624,48 @@ mod tests {
         for dir in ["captures", ".idea", ".kotlin"] {
             assert!(gradle.churn.contains(&dir), "{dir} should be churn");
             assert!(!gradle.regenerable.contains(&dir), "{dir} is not rebuilt");
+        }
+    }
+
+    #[test]
+    fn a_c_project_is_recognised_by_whichever_build_system_drives_it() {
+        let dir = tempfile::tempdir().unwrap();
+
+        for marker in [
+            "CMakeLists.txt",
+            "CMakePresets.json",
+            "meson.build",
+            "configure.ac",
+            "Makefile",
+            "GNUmakefile",
+            "conanfile.txt",
+            "conanfile.py",
+            "vcpkg.json",
+        ] {
+            let project = dir.path().join(marker.replace('.', "-"));
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(marker), "").unwrap();
+
+            let names: Vec<&str> = ecosystems(&project).iter().map(|e| e.name).collect();
+            assert_eq!(names, ["C/C++"], "for {marker}");
+        }
+    }
+
+    /// A configured build directory is not a dependency tree — the flags it was
+    /// configured with are inside it — so it is kept on disk and left out of
+    /// the archive rather than deleted.
+    #[test]
+    fn a_cmake_build_directory_is_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("CMakeLists.txt"), "project(demo)").unwrap();
+
+        assert_eq!(regenerable_dirs(dir.path()), ["vcpkg_installed"]);
+        for kept in ["build", "builddir", "cmake-build-debug", "out"] {
+            assert!(
+                derived_dirs(dir.path()).contains(&kept.to_string()),
+                "{kept} should be derived"
+            );
+            assert!(archive_exclude_dirs(dir.path()).contains(&kept.to_string()));
         }
     }
 
