@@ -17,8 +17,10 @@ use crate::error::Result;
 pub struct Ecosystem {
     /// What it is called, as `pmanager info` prints it.
     pub name: &'static str,
-    /// Files at the project root that say a project is built with it. Any one
-    /// of them is enough.
+    /// Files that say a project is built with it, named relative to the project
+    /// root. Any one of them is enough. Nearly all are a bare filename sitting
+    /// at the root; a path is for the toolchain that keeps its manifest in a
+    /// fixed subdirectory, as Tauri does.
     pub markers: &'static [&'static str],
     /// Extensions, without the dot, of files at the project root that say the
     /// same thing. For toolchains whose manifest is named after the project
@@ -262,6 +264,30 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
         regenerable: &[".dart_tool", ".gradle", ".symlinks", "Pods", "build"],
         derived: &[],
         churn: &[".idea"],
+    },
+    // Tauri is the one toolchain whose manifest is not at the root: the Rust
+    // half of the app lives under `src-tauri`, and the root belongs to the web
+    // frontend. That is exactly why it needs an entry. Without one the root
+    // reads as a plain Node project, `Cargo.toml` is a level down where nothing
+    // looks for it, and `src-tauri/target` — the largest directory in the
+    // project by a wide margin — is never claimed by anybody.
+    //
+    // `gen`, where `tauri android init` writes the platform projects, is
+    // deliberately not claimed. It is regenerated in principle, but the
+    // manifests and signing configuration inside it are routinely edited by
+    // hand and committed, so nothing there is safe to assume reproducible.
+    Ecosystem {
+        name: "Tauri",
+        markers: &[
+            "src-tauri/tauri.conf.json",
+            "src-tauri/tauri.conf.json5",
+            "src-tauri/Tauri.toml",
+            "tauri.conf.json",
+        ],
+        marker_extensions: &[],
+        regenerable: &["target"],
+        derived: &[],
+        churn: &[],
     },
 ];
 
@@ -824,6 +850,43 @@ mod tests {
             .collect();
         assert_eq!(names, [".dart_tool", ".gradle", "build", "Pods"]);
         assert_eq!(total_bytes(&found), 20);
+    }
+
+    /// The Rust half of a Tauri app is a level below the root, so without an
+    /// entry of its own nothing would claim the biggest directory in it.
+    #[test]
+    fn a_tauri_apps_rust_target_is_trimmed_from_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name": "app"}"#).unwrap();
+        write(dir.path(), "src-tauri/tauri.conf.json", "{}");
+        write(dir.path(), "src-tauri/Cargo.toml", "[package]");
+        write(dir.path(), "src-tauri/target/debug/app", "0123456789");
+        write(dir.path(), "node_modules/vite/index.js", "01234");
+        write(dir.path(), "src/main.ts", "source");
+
+        let names: Vec<&str> = ecosystems(dir.path()).iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Node", "Tauri"]);
+        assert_eq!(regenerable_dirs(dir.path()), ["node_modules", "target"]);
+
+        let found = purgeable(dir.path(), &regenerable_dirs(dir.path())).unwrap();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(total_bytes(&found), 15);
+
+        // The frontend sources still date the project; neither half's output
+        // makes it look like somebody was working.
+        let edit = last_edit(dir.path(), &skip_dirs()).unwrap().unwrap();
+        assert_eq!(edit.path.file_name().unwrap(), "main.ts");
+    }
+
+    /// A Tauri app with no frontend package of its own is still a Tauri app.
+    #[test]
+    fn a_tauri_config_at_the_root_is_enough() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tauri.conf.json"), "{}").unwrap();
+
+        let names: Vec<&str> = ecosystems(dir.path()).iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Tauri"]);
+        assert_eq!(regenerable_dirs(dir.path()), ["target"]);
     }
 
     #[test]
