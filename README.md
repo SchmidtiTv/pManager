@@ -8,8 +8,9 @@ has touched in six. Nothing is lost — the trimmed ones need a reinstall, the
 compressed ones a `pmanager restore`.
 
 Which directories those are follows the project: `node_modules` for Node,
-`target` for Rust, `.venv` and `__pycache__` for Python, `vendor` for Go,
-`build` and `.gradle` for Java, Kotlin and Android.
+`target` for Rust and Tauri, `.venv` and `__pycache__` for Python, `vendor` for
+Go, `build` and `.gradle` for Java, Kotlin, Android and Flutter, `obj` for C#,
+and for C and C++ the build directories are left alone but never archived.
 
 ```
 C:\Code\                before                C:\Code\                  after
@@ -219,11 +220,12 @@ round trip, because none of that is regenerable. Two things are left out:
 
 - **dependency trees** — `node_modules`, `target`, `.venv`, and whatever else
   you add to `purge_dirs`. One command rebuilds them.
-- **build output** — `dist`, `build`, `out`, `coverage`, `.next`, `.turbo`,
-  `.pytest_cache` and their kin. Building the stored sources reproduces them.
+- **build output** — `dist`, `build`, `out`, `bin`, `coverage`, `.next`,
+  `.turbo`, `.pytest_cache`, a CMake `cmake-build-debug` and their kin.
+  Building the stored sources reproduces them.
 
-Editor settings and profiler recordings (`.idea`, `.kotlin`, `captures`) are
-stored, even though the toolchain wrote them: no build puts those back.
+Editor settings and profiler recordings (`.idea`, `.kotlin`, `.vs`, `captures`)
+are stored, even though the toolchain wrote them: no build puts those back.
 
 The two lists differ in what happens on disk, not in the archive. A dependency
 tree is deleted when trimming; build output is only skipped. Deleting it would
@@ -604,7 +606,7 @@ project, from the manifest sitting at its root:
 | Dart/Flutter | `pubspec.yaml`, `pubspec.lock` | `build`, `.dart_tool`, `.gradle`, `Pods`, `.symlinks` |
 | Tauri | `src-tauri/tauri.conf.json`, `src-tauri/tauri.conf.json5`, `src-tauri/Tauri.toml`, `tauri.conf.json` | `target` |
 
-So a machine holding all six needs no configuration at all, and a `target`
+So a machine holding all ten needs no configuration at all, and a `target`
 directory with no `Cargo.toml` beside it is never touched — pManager only
 deletes what the tooling to rebuild it is sitting right there for. A polyglot
 repository matching more than one row has all of their directories trimmed.
