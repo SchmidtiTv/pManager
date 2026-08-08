@@ -601,6 +601,7 @@ project, from the manifest sitting at its root:
 | Maven | `pom.xml` | `target` |
 | C/C++ | `CMakeLists.txt`, `CMakePresets.json`, `meson.build`, `configure.ac`, `Makefile`, `GNUmakefile`, `conanfile.txt`, `conanfile.py`, `vcpkg.json` | `vcpkg_installed` |
 | .NET | any `*.sln`, `*.slnx`, `*.csproj`, `*.fsproj`, `*.vbproj`; `global.json`, `Directory.Build.props`, `Directory.Packages.props`, `NuGet.config`, `paket.dependencies` | `obj` |
+| Dart/Flutter | `pubspec.yaml`, `pubspec.lock` | `build`, `.dart_tool`, `.gradle`, `Pods`, `.symlinks` |
 
 So a machine holding all six needs no configuration at all, and a `target`
 directory with no `Cargo.toml` beside it is never touched — pManager only
@@ -681,6 +682,24 @@ archives. Two things are deliberately not claimed — `packages`, the pre-2017
 NuGet directory, because modern restores go to the shared cache under your home
 directory and `packages` is what a Node workspace calls its sources; and `.vs`,
 which is Visual Studio's own state rather than anything a build puts back.
+
+### Dart and Flutter
+
+One row for both: a Flutter app and a Dart package are described by the same
+`pubspec.yaml` and write the same `.dart_tool`.
+
+`build` is trimmed here for the reason it is under Gradle — Flutter reserves
+the name, `flutter clean` empties it, and on an app that has been built for a
+device it is by far the largest thing in the folder. The platform directories
+are the rest of it, and they are found wherever they sit: `android/.gradle`,
+the `Pods` that `pod install` restores from `Podfile.lock` under `ios` and
+`macos`, and the `.symlinks` that `pub get` rewrites for every plugin. What
+Android Studio writes is treated as it is for Android: `.idea` is ignored when
+dating a project, and never deleted.
+
+```toml
+install_command = ["flutter", "pub", "get"]
+```
 
 Setting `purge_dirs` turns the detection off and applies your list to every
 project as written, which is how to name something pManager does not know

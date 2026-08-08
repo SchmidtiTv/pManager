@@ -246,6 +246,23 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
         derived: &["artifacts", "bin"],
         churn: &[".idea", ".vs"],
     },
+    // Flutter and plain Dart are one entry: both are described by `pubspec.yaml`
+    // and both write `.dart_tool`, so there is nothing to tell apart.
+    //
+    // `build` is regenerable here for the reason it is under Gradle — Flutter
+    // reserves the name, `flutter clean` empties it, and on an app that has
+    // been built for a device it is by far the largest thing on disk. The
+    // platform folders are the rest of it: `android/.gradle`, the `Pods` that
+    // `pod install` restores from `Podfile.lock` under `ios` and `macos`, and
+    // the `.symlinks` that `pub get` rewrites for every plugin.
+    Ecosystem {
+        name: "Dart/Flutter",
+        markers: &["pubspec.yaml", "pubspec.lock"],
+        marker_extensions: &[],
+        regenerable: &[".dart_tool", ".gradle", ".symlinks", "Pods", "build"],
+        derived: &[],
+        churn: &[".idea"],
+    },
 ];
 
 /// Directories ignored when dating a project no matter what it is built with.
@@ -771,6 +788,42 @@ mod tests {
                 "{never} should travel into the archive"
             );
         }
+    }
+
+    #[test]
+    fn a_flutter_project_is_trimmed_down_to_its_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pubspec.yaml"), "name: demo").unwrap();
+
+        let names: Vec<&str> = ecosystems(dir.path()).iter().map(|e| e.name).collect();
+        assert_eq!(names, ["Dart/Flutter"]);
+        assert_eq!(
+            regenerable_dirs(dir.path()),
+            [".dart_tool", ".gradle", ".symlinks", "Pods", "build"]
+        );
+        // The IDE's own state is not a build, so it is stored rather than lost.
+        assert!(!archive_exclude_dirs(dir.path()).contains(&".idea".to_string()));
+    }
+
+    /// The platform folders are where a built Flutter app keeps its bulk, and
+    /// they are found however deep the walk has to go for them.
+    #[test]
+    fn a_flutter_apps_platform_directories_are_all_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pubspec.yaml"), "name: demo").unwrap();
+        write(dir.path(), "lib/main.dart", "void main() {}");
+        write(dir.path(), "build/app/outputs/app.apk", "0123456789");
+        write(dir.path(), ".dart_tool/package_config.json", "{}");
+        write(dir.path(), "android/.gradle/cache.bin", "01234");
+        write(dir.path(), "ios/Pods/Firebase/Firebase.h", "012");
+
+        let found = purgeable(dir.path(), &regenerable_dirs(dir.path())).unwrap();
+        let names: Vec<String> = found
+            .iter()
+            .map(|dir| dir.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, [".dart_tool", ".gradle", "build", "Pods"]);
+        assert_eq!(total_bytes(&found), 20);
     }
 
     #[test]
