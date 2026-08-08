@@ -602,6 +602,7 @@ project, from the manifest sitting at its root:
 | C/C++ | `CMakeLists.txt`, `CMakePresets.json`, `meson.build`, `configure.ac`, `Makefile`, `GNUmakefile`, `conanfile.txt`, `conanfile.py`, `vcpkg.json` | `vcpkg_installed` |
 | .NET | any `*.sln`, `*.slnx`, `*.csproj`, `*.fsproj`, `*.vbproj`; `global.json`, `Directory.Build.props`, `Directory.Packages.props`, `NuGet.config`, `paket.dependencies` | `obj` |
 | Dart/Flutter | `pubspec.yaml`, `pubspec.lock` | `build`, `.dart_tool`, `.gradle`, `Pods`, `.symlinks` |
+| Tauri | `src-tauri/tauri.conf.json`, `src-tauri/tauri.conf.json5`, `src-tauri/Tauri.toml`, `tauri.conf.json` | `target` |
 
 So a machine holding all six needs no configuration at all, and a `target`
 directory with no `Cargo.toml` beside it is never touched — pManager only
@@ -700,6 +701,31 @@ dating a project, and never deleted.
 ```toml
 install_command = ["flutter", "pub", "get"]
 ```
+
+### Tauri
+
+Tauri is the one toolchain whose manifest is not at the root. The Rust half of
+the app lives under `src-tauri` and the root belongs to the web frontend, which
+is exactly why it needs a row of its own: without one the root reads as a plain
+Node project, `Cargo.toml` is a level down where nothing looks for it, and
+`src-tauri/target` — the largest directory in the project by a wide margin — is
+claimed by nobody.
+
+With the row, a Tauri app matches both Node and Tauri, and one `pmanager run`
+takes `node_modules` and `src-tauri/target` together:
+
+```
+$ pmanager info desktop-notes
+  toolchain       Node, Tauri
+  dependencies    3.4 GiB in 2 tree(s)
+                    3.1 GiB  src-tauri\target
+                    312.0 MiB  node_modules
+```
+
+`src-tauri/gen`, where `tauri android init` writes the platform projects, is
+not claimed. It is regenerated in principle, but the manifests and signing
+configuration inside it are routinely edited by hand and committed, so nothing
+there is safe to assume reproducible.
 
 Setting `purge_dirs` turns the detection off and applies your list to every
 project as written, which is how to name something pManager does not know
