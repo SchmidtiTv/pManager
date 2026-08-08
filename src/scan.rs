@@ -20,6 +20,12 @@ pub struct Ecosystem {
     /// Files at the project root that say a project is built with it. Any one
     /// of them is enough.
     pub markers: &'static [&'static str],
+    /// Extensions, without the dot, of files at the project root that say the
+    /// same thing. For toolchains whose manifest is named after the project
+    /// rather than after the tool — `Inventory.csproj`, `Inventory.sln` — there
+    /// is no fixed name to look for, so the extension is what identifies it.
+    /// Matched case-insensitively, since these come from Windows.
+    pub marker_extensions: &'static [&'static str],
     /// Directories the toolchain rebuilds by installing what the manifest
     /// beside them asks for. These are what trimming deletes and what an
     /// archive leaves out: what pManager is willing to delete is what it
@@ -47,6 +53,34 @@ impl Ecosystem {
         self.markers
             .iter()
             .any(|marker| project.join(marker).is_file())
+            || self.matches_by_extension(project)
+    }
+
+    /// Whether any file directly in `project` carries one of the extensions
+    /// that identify this toolchain. Only the root is read, and only files
+    /// count, so a `build.csproj` directory or one buried in a subproject is
+    /// not the marker — the same rule the named markers keep to.
+    fn matches_by_extension(&self, project: &Path) -> bool {
+        if self.marker_extensions.is_empty() {
+            return false;
+        }
+
+        let Ok(entries) = std::fs::read_dir(project) else {
+            return false;
+        };
+
+        entries.flatten().any(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_file())
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .is_some_and(|found| {
+                        self.marker_extensions
+                            .iter()
+                            .any(|ext| found.eq_ignore_ascii_case(ext))
+                    })
+        })
     }
 
     /// Every directory this toolchain writes, whatever becomes of it.
@@ -71,6 +105,7 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
     Ecosystem {
         name: "Node",
         markers: &["package.json"],
+        marker_extensions: &[],
         regenerable: &["node_modules"],
         derived: &[
             ".next",
@@ -87,6 +122,7 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
     Ecosystem {
         name: "Rust",
         markers: &["Cargo.toml"],
+        marker_extensions: &[],
         regenerable: &["target"],
         derived: &[],
         churn: &[],
@@ -94,6 +130,7 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
     Ecosystem {
         name: "Python",
         markers: &["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"],
+        marker_extensions: &[],
         regenerable: &[".venv", "venv", "__pycache__"],
         derived: &[".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox"],
         churn: &[],
@@ -101,6 +138,7 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
     Ecosystem {
         name: "Go",
         markers: &["go.mod"],
+        marker_extensions: &[],
         regenerable: &["vendor"],
         derived: &[],
         churn: &[],
@@ -126,6 +164,7 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
             "settings.gradle",
             "settings.gradle.kts",
         ],
+        marker_extensions: &[],
         regenerable: &[".cxx", ".gradle", "build"],
         derived: &[],
         churn: &[".idea", ".kotlin", "captures"],
@@ -133,6 +172,7 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
     Ecosystem {
         name: "Maven",
         markers: &["pom.xml"],
+        marker_extensions: &[],
         regenerable: &["target"],
         derived: &[],
         churn: &[".idea"],

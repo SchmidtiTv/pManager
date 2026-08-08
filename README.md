@@ -664,16 +664,33 @@ rebuild, and the directories it merely writes to:
 Ecosystem {
     name: "Elixir",
     markers: &["mix.exs"],
+    marker_extensions: &[],
     regenerable: &["deps", "_build"],
+    derived: &[],
     churn: &[],
 },
 ```
 
 Both defaults are derived from that table, so there is no second list to keep
 in step: anything named here is automatically ignored when dating a project as
-well. A directory belongs in `regenerable` only if the toolchain puts it back
-from the files that travel into the archive beside it; anything else belongs in
-`churn`, where being wrong about it costs a project nothing.
+well.
+
+The three directory lists are three strengths of claim, and which one a
+directory belongs in is the whole of the decision:
+
+- `regenerable` — deleted when trimming, and left out of archives. Only for a
+  directory the toolchain puts back from the files that travel into the archive
+  beside it, since being wrong here deletes something for good.
+- `derived` — left out of archives, but never deleted. Build output: rebuilt by
+  building the stored sources, so not worth storing, but a build sitting on disk
+  is one somebody may still be using.
+- `churn` — stored and kept, ignored only when dating a project. Everything
+  else the toolchain writes, where being wrong costs nothing.
+
+`marker_extensions` is for the toolchain whose manifest is named after the
+project rather than after the tool, as `Inventory.csproj` is; it is empty for
+every row that has a fixed filename to look for. A marker with a path in it,
+like Tauri's `src-tauri/tauri.conf.json`, is read relative to the project root.
 
 ## Layout
 
