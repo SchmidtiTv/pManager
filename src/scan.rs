@@ -214,6 +214,38 @@ pub const ECOSYSTEMS: &[Ecosystem] = &[
         ],
         churn: &[],
     },
+    // C#, F# and VB all arrive through MSBuild, so they are one entry, the same
+    // way Java, Kotlin and Android are one Gradle entry.
+    //
+    // A .NET project is normally identified by a file named after the project
+    // rather than after the tool — `Inventory.csproj`, `Inventory.sln` — which
+    // is what `marker_extensions` is for. The fixed-name markers below are the
+    // repository-wide files that a solution keeps at its root.
+    //
+    // `obj` is where `dotnet restore` lands, so it is a dependency tree with
+    // intermediate object files mixed in, and `dotnet build` rebuilds the whole
+    // of it. `bin` is the build somebody may still be running, and it is only
+    // claimed here beside a project file: in a Node package `bin` holds the CLI
+    // scripts, which are sources, and nothing about them is reproducible.
+    //
+    // `packages` — the pre-2017 NuGet restore directory — is deliberately not
+    // claimed. Modern restores go to the shared cache under the home
+    // directory, and `packages` is what a Node workspace calls its sources.
+    Ecosystem {
+        name: ".NET",
+        markers: &[
+            "global.json",
+            "Directory.Build.props",
+            "Directory.Packages.props",
+            "NuGet.config",
+            "nuget.config",
+            "paket.dependencies",
+        ],
+        marker_extensions: &["sln", "slnx", "csproj", "fsproj", "vbproj"],
+        regenerable: &["obj"],
+        derived: &["artifacts", "bin"],
+        churn: &[".idea", ".vs"],
+    },
 ];
 
 /// Directories ignored when dating a project no matter what it is built with.
@@ -666,6 +698,78 @@ mod tests {
                 "{kept} should be derived"
             );
             assert!(archive_exclude_dirs(dir.path()).contains(&kept.to_string()));
+        }
+    }
+
+    #[test]
+    fn a_dotnet_project_is_recognised_by_a_file_named_after_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // The manifest carries the project's name, not the tool's, so it is the
+        // extension that identifies it — in whatever case Windows wrote it.
+        for manifest in [
+            "Inventory.sln",
+            "Inventory.slnx",
+            "Inventory.csproj",
+            "Inventory.fsproj",
+            "Inventory.vbproj",
+            "INVENTORY.CSPROJ",
+        ] {
+            let project = dir.path().join(manifest.replace('.', "-"));
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(manifest), "<Project/>").unwrap();
+
+            let names: Vec<&str> = ecosystems(&project).iter().map(|e| e.name).collect();
+            assert_eq!(names, [".NET"], "for {manifest}");
+            assert_eq!(regenerable_dirs(&project), ["obj"]);
+            assert_eq!(derived_dirs(&project), ["artifacts", "bin"]);
+        }
+
+        // A solution's repository-wide files identify it just as well.
+        for marker in ["global.json", "Directory.Build.props", "NuGet.config"] {
+            let project = dir.path().join(marker.replace('.', "-"));
+            std::fs::create_dir_all(&project).unwrap();
+            std::fs::write(project.join(marker), "{}").unwrap();
+
+            let names: Vec<&str> = ecosystems(&project).iter().map(|e| e.name).collect();
+            assert_eq!(names, [".NET"], "for {marker}");
+        }
+    }
+
+    /// The extension markers keep to the same rule as the named ones: a file,
+    /// directly at the root.
+    #[test]
+    fn a_project_file_below_the_root_does_not_identify_a_solution() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/Inventory")).unwrap();
+        std::fs::write(
+            dir.path().join("src/Inventory/Inventory.csproj"),
+            "<Project/>",
+        )
+        .unwrap();
+        // A directory that happens to be named like one is not one either.
+        std::fs::create_dir_all(dir.path().join("Inventory.sln")).unwrap();
+
+        assert!(ecosystems(dir.path()).is_empty());
+    }
+
+    /// Restore output is what gets deleted; the build somebody may be running
+    /// is only kept out of the archive. `packages` is claimed by neither — it
+    /// is what a Node workspace calls its sources.
+    #[test]
+    fn a_dotnet_build_survives_a_trim_but_its_restore_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("App.csproj"), "<Project/>").unwrap();
+
+        assert!(regenerable_dirs(dir.path()).contains(&"obj".to_string()));
+        assert!(!regenerable_dirs(dir.path()).contains(&"bin".to_string()));
+        assert!(archive_exclude_dirs(dir.path()).contains(&"bin".to_string()));
+
+        for never in ["packages", ".vs"] {
+            assert!(
+                !archive_exclude_dirs(dir.path()).contains(&never.to_string()),
+                "{never} should travel into the archive"
+            );
         }
     }
 

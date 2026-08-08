@@ -600,6 +600,7 @@ project, from the manifest sitting at its root:
 | Gradle | `build.gradle`, `build.gradle.kts`, `settings.gradle`, `settings.gradle.kts` | `build`, `.gradle`, `.cxx` |
 | Maven | `pom.xml` | `target` |
 | C/C++ | `CMakeLists.txt`, `CMakePresets.json`, `meson.build`, `configure.ac`, `Makefile`, `GNUmakefile`, `conanfile.txt`, `conanfile.py`, `vcpkg.json` | `vcpkg_installed` |
+| .NET | any `*.sln`, `*.slnx`, `*.csproj`, `*.fsproj`, `*.vbproj`; `global.json`, `Directory.Build.props`, `Directory.Packages.props`, `NuGet.config`, `paket.dependencies` | `obj` |
 
 So a machine holding all six needs no configuration at all, and a `target`
 directory with no `Cargo.toml` beside it is never touched — pManager only
@@ -660,6 +661,26 @@ rebuild, it costs knowing what to rebuild. So `build`, `builddir`, `_build`,
 they are and kept out of archives, which is where the space is won anyway. The
 one exception is `vcpkg_installed`, a dependency tree in the ordinary sense:
 `vcpkg.json` says what belongs in it and `vcpkg install` puts it back.
+
+### C#, F# and Visual Basic
+
+All three arrive through MSBuild, so they are one row, the same way Java,
+Kotlin and Android are one Gradle row.
+
+A .NET project is normally identified by a file named after the project rather
+than after the tool — `Inventory.csproj`, not a fixed filename — so this is the
+one row matched by extension. Any `*.sln`, `*.slnx`, `*.csproj`, `*.fsproj` or
+`*.vbproj` at the root identifies it, as do the repository-wide files a
+solution keeps beside them. Every project in a solution has its own `obj` and
+`bin`, and they are all found however deep.
+
+`obj` is where `dotnet restore` lands, so it is a dependency tree with the
+intermediate object files mixed in, and one `dotnet build` rebuilds all of it.
+`bin` is the build somebody may still be running: kept on disk, left out of
+archives. Two things are deliberately not claimed — `packages`, the pre-2017
+NuGet directory, because modern restores go to the shared cache under your home
+directory and `packages` is what a Node workspace calls its sources; and `.vs`,
+which is Visual Studio's own state rather than anything a build puts back.
 
 Setting `purge_dirs` turns the detection off and applies your list to every
 project as written, which is how to name something pManager does not know
