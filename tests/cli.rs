@@ -1032,9 +1032,9 @@ fn a_vanished_project_is_reported_and_then_pruned() {
 
 // ── Scheduling ───────────────────────────────────────────────────────────────
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 #[test]
-fn scheduling_off_windows_explains_itself() {
+fn scheduling_off_windows_and_macos_explains_itself() {
     let (_dir, config) = isolated();
 
     pmanager()
@@ -1042,7 +1042,31 @@ fn scheduling_off_windows_explains_itself() {
         .arg(&config)
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Task Scheduler"));
+        .stderr(predicate::str::contains("Task Scheduler"))
+        .stderr(predicate::str::contains("launchd"));
+}
+
+/// `--config` does not affect where the launchd label lives — it is derived
+/// from `--name`, which defaults to a name nothing else in this suite uses —
+/// so this reads real (but only reads) state under the developer's own
+/// `~/Library/LaunchAgents`.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_status_query_for_an_unscheduled_task_says_so_on_macos() {
+    let (_dir, config) = isolated();
+
+    pmanager()
+        .args([
+            "schedule",
+            "status",
+            "--name",
+            "pmanager-test-suite-canary",
+            "--config",
+        ])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no scheduled task"));
 }
 
 // ── JSON output ──────────────────────────────────────────────────────────────
@@ -1074,7 +1098,8 @@ fn every_command_answers_in_json() {
     let path = project(dir.path(), "api", 90);
     track(&config, &path);
 
-    // `schedule` is the one exception, and only because it needs Windows;
+    // `schedule` is the one exception, and only because it needs a platform
+    // scheduler (Task Scheduler or launchd) that touches real system state;
     // when it fails it fails as JSON too, which is tested below.
     assert!(json_document(&config, &["list"])["projects"].is_array());
     assert!(json_document(&config, &["run"])["totals"].is_object());
@@ -1269,9 +1294,9 @@ fn a_failure_is_reported_as_json_on_stderr() {
     );
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 #[test]
-fn even_the_windows_only_command_fails_in_json() {
+fn even_the_scheduler_only_command_fails_in_json() {
     let (_dir, config) = isolated();
 
     let output = pmanager()
@@ -1287,6 +1312,34 @@ fn even_the_windows_only_command_fails_in_json() {
             .as_str()
             .unwrap()
             .contains("Task Scheduler")
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn schedule_status_for_an_unscheduled_task_fails_in_json_on_macos() {
+    let (_dir, config) = isolated();
+
+    let output = pmanager()
+        .args([
+            "schedule",
+            "status",
+            "--name",
+            "pmanager-test-suite-canary",
+            "--json",
+            "--config",
+        ])
+        .arg(&config)
+        .output()
+        .expect("the binary runs");
+
+    let reported: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("stderr is one JSON document");
+    assert!(
+        reported["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no scheduled task")
     );
 }
 
