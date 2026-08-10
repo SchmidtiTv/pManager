@@ -793,6 +793,7 @@ src/
   cli.rs              clap definitions: global flags and the subcommand list
   scan.rs             measuring a project: last edit, purgeable size, ages
   git.rs              read-only git status via the `git` binary
+  vmanager.rs         whether the `vmanager` binary can be run
   lifecycle.rs        the policy: states, thresholds, decide, trim, archive
   archive.rs          .pArchived (7z) creation, verification and extraction
   db.rs               SQLite connection, migrations and queries
