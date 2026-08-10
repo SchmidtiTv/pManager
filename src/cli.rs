@@ -16,6 +16,8 @@ Getting started:
   pmanager list                          See every project at a glance
   pmanager run                           See what has aged out (changes nothing)
   pmanager run --yes                     Carry it out
+  pmanager project set-version api C:\\Tools\\Node 20.11   Pin a version
+  pmanager use api                       Switch vManager to it
   pmanager schedule install              …every day at 03:00
   pmanager completions --help            Complete commands as you type them
   pmanager list --json                   The same, as data for a script
@@ -174,6 +176,9 @@ pub enum Command {
     /// Extract an archived project and put it back to work
     Restore(crate::commands::restore::Args),
 
+    /// Switch vManager to the versions a project is pinned to
+    Use(crate::commands::r#use::Args),
+
     /// Install or remove the scheduled daily run
     Schedule(crate::commands::schedule::Args),
 
@@ -223,7 +228,10 @@ mod tests {
             &["info", "api"],
             &["project", "prune"],
             &["project", "add", "."],
+            &["project", "set-version", "api", "C:\\Tools\\Node", "20.11"],
+            &["project", "unset-version", "api", "C:\\Tools\\Node"],
             &["restore", "api"],
+            &["use", "api"],
             &["schedule", "status"],
             &["completions", "bash"],
         ];
