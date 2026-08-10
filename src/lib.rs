@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod logging;
 pub mod progress;
 pub mod scan;
+pub mod vmanager;
 
 pub use cli::Cli;
 pub use error::{Error, Result};
