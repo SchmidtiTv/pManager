@@ -4,7 +4,7 @@
 //! and the source — not the directory they all live in.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::archive::{self, human_bytes};
 use crate::commands::Context;
@@ -45,6 +45,41 @@ enum ProjectCommand {
         #[arg(short, long)]
         yes: bool,
     },
+
+    /// Pin a project to a version of a vManager-managed tool
+    ///
+    /// pManager only remembers the pin; `pmanager use <PROJECT>` is what
+    /// tells vManager to actually switch to it.
+    SetVersion {
+        /// A project's path or name, as shown by `pmanager list`
+        #[arg(value_name = "PROJECT")]
+        project: String,
+
+        /// A vManager-registered folder, the parent of the tool's versions
+        #[arg(value_name = "FOLDER")]
+        folder: PathBuf,
+
+        /// The version to pin to
+        //
+        // Named `target` rather than `version`: clap gives every subcommand
+        // its own `--version`/`-V` flag (`propagate_version = true` on the
+        // top-level `Cli`, which reaches nested subcommands too), and a
+        // positional argument called `version` collides with it — both would
+        // share the clap argument id "version".
+        #[arg(value_name = "VERSION")]
+        target: String,
+    },
+
+    /// Remove a project's pin to a vManager-managed tool
+    UnsetVersion {
+        /// A project's path or name, as shown by `pmanager list`
+        #[arg(value_name = "PROJECT")]
+        project: String,
+
+        /// A folder shown by `pmanager info <PROJECT>`
+        #[arg(value_name = "FOLDER")]
+        folder: PathBuf,
+    },
 }
 
 pub fn run(args: &Args, ctx: &Context) -> Result<()> {
@@ -52,6 +87,12 @@ pub fn run(args: &Args, ctx: &Context) -> Result<()> {
         ProjectCommand::Add { projects, name } => add(ctx, projects, name.as_deref()),
         ProjectCommand::Remove { projects } => remove(ctx, projects),
         ProjectCommand::Prune { yes } => prune(ctx, *yes),
+        ProjectCommand::SetVersion {
+            project,
+            folder,
+            target,
+        } => set_version(ctx, project, folder, target),
+        ProjectCommand::UnsetVersion { project, folder } => unset_version(ctx, project, folder),
     }
 }
 
@@ -260,6 +301,68 @@ fn prune(ctx: &Context, yes: bool) -> Result<()> {
             "\n{} project(s) missing; pass --yes to stop tracking them",
             missing.len()
         )?;
+    }
+    Ok(())
+}
+
+/// Pin a project to a version of whatever `folder` holds.
+fn set_version(ctx: &Context, project: &str, folder: &Path, version: &str) -> Result<()> {
+    let db = ctx.open_database()?;
+    let record = db.find_project(project)?;
+    // Canonicalized so the pin survives however the folder was spelled, and
+    // so it lines up with what `vmanager use` itself would resolve it to.
+    let folder = archive::canonical_dir(folder)?;
+    db.set_version(record.id, &folder, version)?;
+
+    if ctx.is_json() {
+        return json::emit(&json::VersionPinned {
+            project: record.name.clone(),
+            folder: json::path(&folder),
+            version: version.to_string(),
+        });
+    }
+
+    if ctx.prints_text() {
+        writeln!(
+            std::io::stdout().lock(),
+            "{} will use {} {version}\n  run `pmanager use {}` to switch vManager to it",
+            record.name,
+            folder.display(),
+            record.name
+        )?;
+    }
+    Ok(())
+}
+
+/// Remove a project's pin to `folder`.
+fn unset_version(ctx: &Context, project: &str, folder: &Path) -> Result<()> {
+    let db = ctx.open_database()?;
+    let record = db.find_project(project)?;
+    // A folder that no longer exists must still be removable, the same way
+    // `project remove` copes with a project whose own folder is gone.
+    let folder = archive::canonical_dir(folder).unwrap_or_else(|_| folder.to_path_buf());
+    let removed = db.unset_version(record.id, &folder)?;
+
+    if ctx.is_json() {
+        return json::emit(&json::VersionUnpinned {
+            project: record.name.clone(),
+            folder: json::path(&folder),
+            removed,
+        });
+    }
+
+    if ctx.prints_text() {
+        let mut out = std::io::stdout().lock();
+        if removed {
+            writeln!(
+                out,
+                "{} no longer pins a version for {}",
+                record.name,
+                folder.display()
+            )?;
+        } else {
+            writeln!(out, "{} had no pin for {}", record.name, folder.display())?;
+        }
     }
     Ok(())
 }

@@ -1030,6 +1030,132 @@ fn a_vanished_project_is_reported_and_then_pruned() {
         .stdout(predicate::str::contains("no projects tracked yet"));
 }
 
+// ── Version pinning ──────────────────────────────────────────────────────────
+
+#[test]
+fn pinning_a_version_reports_it_and_unset_removes_it() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "app", 1);
+    track(&config, &path);
+    let tools = dir.path().join("tools").join("node");
+    std::fs::create_dir_all(&tools).unwrap();
+
+    pmanager()
+        .args(["project", "set-version", "app"])
+        .arg(&tools)
+        .arg("20.11")
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("app will use"))
+        .stdout(predicate::str::contains("20.11"))
+        .stdout(predicate::str::contains("pmanager use app"));
+
+    // Re-pinning the same folder replaces the version rather than adding a
+    // second pin.
+    pmanager()
+        .args(["project", "set-version", "app"])
+        .arg(&tools)
+        .arg("18.20")
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    pmanager()
+        .args(["project", "unset-version", "app"])
+        .arg(&tools)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no longer pins"));
+
+    // Unsetting a folder that was never pinned reports that rather than
+    // failing.
+    pmanager()
+        .args(["project", "unset-version", "app"])
+        .arg(&tools)
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("had no pin"));
+}
+
+#[test]
+fn use_with_no_pins_explains_how_to_set_one() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "app", 1);
+    track(&config, &path);
+
+    pmanager()
+        .args(["use", "app", "--config"])
+        .arg(&config)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no pinned versions"))
+        .stderr(predicate::str::contains("pmanager project set-version"));
+}
+
+#[test]
+fn use_fails_clearly_when_vmanager_is_not_installed() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "app", 1);
+    track(&config, &path);
+    let tools = dir.path().join("tools").join("node");
+    std::fs::create_dir_all(&tools).unwrap();
+
+    pmanager()
+        .args(["project", "set-version", "app"])
+        .arg(&tools)
+        .arg("20.11")
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    // An empty PATH: whatever the host machine has installed must not decide
+    // whether this test passes.
+    pmanager()
+        .args(["use", "app", "--config"])
+        .arg(&config)
+        .env("PATH", "")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("vmanager is not on PATH"));
+}
+
+#[test]
+fn use_is_reported_as_json_when_vmanager_is_unavailable() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "app", 1);
+    track(&config, &path);
+    let tools = dir.path().join("tools").join("node");
+    std::fs::create_dir_all(&tools).unwrap();
+
+    pmanager()
+        .args(["project", "set-version", "app"])
+        .arg(&tools)
+        .arg("20.11")
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    // vmanager is not on PATH, so `use` fails before it gets to emit a
+    // document at all — the error itself is what `--json` reports.
+    pmanager()
+        .args(["use", "app", "--config"])
+        .arg(&config)
+        .arg("--json")
+        .env("PATH", "")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("\"kind\": \"failure\""));
+}
+
 // ── Scheduling ───────────────────────────────────────────────────────────────
 
 #[cfg(not(any(windows, target_os = "macos")))]

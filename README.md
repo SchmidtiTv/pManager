@@ -42,6 +42,8 @@ pmanager project add C:\Code\api-server   # track a project
 pmanager list                             # see them all
 pmanager run                              # see what has aged out (changes nothing)
 pmanager run --yes                        # carry it out
+pmanager project set-version api-server C:\Tools\Node 20.11   # pin a version
+pmanager use api-server                   # tell vManager to switch to it
 pmanager schedule install                 # …every day at 03:00
 pmanager completions powershell           # complete commands as you type them
 ```
@@ -62,6 +64,9 @@ pmanager [OPTIONS] <COMMAND>
 | `project add <PROJECT>` | Track a project folder |
 | `project remove <PROJECT>` | Stop tracking one; nothing on disk is touched |
 | `project prune` | Stop tracking projects whose folder is gone |
+| `project set-version <PROJECT> <FOLDER> <VERSION>` | Pin a project to a version of a vManager-managed tool |
+| `project unset-version <PROJECT> <FOLDER>` | Remove a pin |
+| `use <PROJECT>` | Switch vManager to the versions a project is pinned to |
 | `restore <PROJECT>` | Extract an archived project and put it back to work |
 | `schedule install` | Register the daily run with the platform scheduler (Task Scheduler / launchd) |
 | `schedule uninstall` | Remove the scheduled task |
@@ -451,6 +456,51 @@ unchanged: `pmanager restore` uses the path recorded in the database, and
 extraction goes by the file's own signature rather than its name. There is
 nothing to migrate, and renaming an old archive by hand is unnecessary.
 
+## Version pinning
+
+pManager can track which version of a tool each project wants, and hand that
+off to [vManager](https://github.com/SchmidtiTv/vManager) to make it so.
+vManager already keeps every version of your tools — say, a handful of Node
+installs under `C:\Tools\Node` — and can point a stable `current` link at
+whichever one is selected. pManager's part is remembering which project wants
+which:
+
+```sh
+pmanager project set-version api-server C:\Tools\Node 20.11
+pmanager project set-version legacy-tool C:\Tools\Node 14.21
+pmanager use api-server      # C:\Tools\Node\current -> C:\Tools\Node\20.11
+pmanager use legacy-tool     # C:\Tools\Node\current -> C:\Tools\Node\14.21
+```
+
+`<FOLDER>` is a vManager folder — the parent of a tool's version subfolders,
+the same path you would give `vmanager folder add`. It does not need to be
+registered with vManager for pinning to work, only to exist; `pmanager use`
+is the point where vManager itself resolves it. A project can pin more than
+one folder — a Tauri app might pin both Node and Rust — and `pmanager use`
+switches all of a project's pins in one call, reporting each on its own line
+and continuing past one that fails rather than stopping at the first:
+
+```
+$ pmanager use api-server
+C:\Tools\Node  -> 20.11
+```
+
+`pmanager project set-version` only records the pin; nothing on disk changes
+until `pmanager use` is run. That split exists because switching a version is
+process-wide — the last `vmanager use` wins regardless of which project asked
+for it — so pManager never does it as a side effect of a command like `info`
+or `run` that was not actually about switching anything.
+
+`pmanager use` requires vManager to be installed and on `PATH`; without it,
+the command fails explaining that rather than pretending to have switched
+anything. Removing a project (`pmanager project remove`) drops its pins along
+with it — there is nothing left to switch to once the project itself is
+untracked.
+
+See vManager's own README for the other half of this: how `current` is
+implemented, and why it is a directory junction on Windows rather than the
+`PATH` environment variable itself.
+
 ## Scheduling the daily run
 
 pManager has no resident daemon. `schedule install` hands `pmanager run --yes`
@@ -793,7 +843,7 @@ src/
   cli.rs              clap definitions: global flags and the subcommand list
   scan.rs             measuring a project: last edit, purgeable size, ages
   git.rs              read-only git status via the `git` binary
-  vmanager.rs         whether the `vmanager` binary can be run
+  vmanager.rs         vManager detection, and the `vmanager use` subprocess call
   lifecycle.rs        the policy: states, thresholds, decide, trim, archive
   archive.rs          .pArchived (7z) creation, verification and extraction
   db.rs               SQLite connection, migrations and queries
@@ -806,8 +856,9 @@ src/
     run.rs            `pmanager run`
     list.rs           `pmanager list`
     info.rs           `pmanager info`
-    project.rs        `pmanager project`
+    project.rs        `pmanager project`, including version pins
     restore.rs        `pmanager restore`
+    use.rs            `pmanager use`
     schedule.rs       `pmanager schedule`
     completions.rs    `pmanager completions`
 tests/
