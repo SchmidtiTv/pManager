@@ -87,6 +87,17 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX projects_state ON projects (state);
     "#,
+    // v4 — which version of a vManager-managed tool a project is pinned to.
+    // `pmanager use` reads this and shells out to `vmanager use <folder>
+    // <version>` for each row; pManager stores no versions or links itself.
+    r#"
+    CREATE TABLE project_versions (
+        project_id INTEGER NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+        folder     TEXT    NOT NULL,
+        version    TEXT    NOT NULL,
+        PRIMARY KEY (project_id, folder)
+    );
+    "#,
 ];
 
 /// Where an archived project went, and what it held. The archive's size is
@@ -130,6 +141,16 @@ impl ProjectRecord {
     pub fn active_since(&self) -> Option<SystemTime> {
         self.restored_at.map(scan::from_epoch)
     }
+}
+
+/// One row of `project_versions`: a project's pin to a version of whatever
+/// `folder` holds, ready for `pmanager use` to hand to `vmanager use`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionPin {
+    /// A vManager-registered folder — the parent of one tool's versions, not
+    /// a version itself.
+    pub folder: PathBuf,
+    pub version: String,
 }
 
 /// An open connection to the pManager database.
@@ -323,6 +344,41 @@ impl Database {
             [id],
         )?;
         Ok(())
+    }
+
+    /// Pin a project to a version of whatever `folder` holds. Re-pinning the
+    /// same folder replaces the version rather than adding a second row.
+    pub fn set_version(&self, project_id: i64, folder: &Path, version: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO project_versions (project_id, folder, version) VALUES (?1, ?2, ?3)
+             ON CONFLICT (project_id, folder) DO UPDATE SET version = excluded.version",
+            params![project_id, folder.to_string_lossy(), version],
+        )?;
+        Ok(())
+    }
+
+    /// Remove one pin. Returns whether there was one to remove.
+    pub fn unset_version(&self, project_id: i64, folder: &Path) -> Result<bool> {
+        let changed = self.conn.execute(
+            "DELETE FROM project_versions WHERE project_id = ?1 AND folder = ?2",
+            params![project_id, folder.to_string_lossy()],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Every version this project is pinned to, by folder.
+    pub fn versions_for_project(&self, project_id: i64) -> Result<Vec<VersionPin>> {
+        let mut statement = self.conn.prepare(
+            "SELECT folder, version FROM project_versions
+              WHERE project_id = ?1 ORDER BY folder",
+        )?;
+        let rows = statement.query_map([project_id], |row| {
+            Ok(VersionPin {
+                folder: PathBuf::from(row.get::<_, String>(0)?),
+                version: row.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Connection-level settings applied on every open.
@@ -612,6 +668,90 @@ mod tests {
             .map(|record| record.name)
             .collect();
         assert_eq!(names, ["Alpha", "mid", "zeta"]);
+    }
+
+    #[test]
+    fn pinning_a_version_and_reading_it_back() {
+        let db = Database::open_in_memory().unwrap();
+        let project = track(&db, "/code/api", "api");
+
+        db.set_version(project.id, Path::new("/tools/node"), "20.11")
+            .unwrap();
+
+        let pins = db.versions_for_project(project.id).unwrap();
+        assert_eq!(pins.len(), 1);
+        assert_eq!(pins[0].folder, PathBuf::from("/tools/node"));
+        assert_eq!(pins[0].version, "20.11");
+    }
+
+    #[test]
+    fn re_pinning_the_same_folder_replaces_the_version() {
+        let db = Database::open_in_memory().unwrap();
+        let project = track(&db, "/code/api", "api");
+
+        db.set_version(project.id, Path::new("/tools/node"), "18.20")
+            .unwrap();
+        db.set_version(project.id, Path::new("/tools/node"), "20.11")
+            .unwrap();
+
+        let pins = db.versions_for_project(project.id).unwrap();
+        assert_eq!(pins.len(), 1, "the row should be reused, not duplicated");
+        assert_eq!(pins[0].version, "20.11");
+    }
+
+    #[test]
+    fn a_project_can_pin_more_than_one_folder() {
+        let db = Database::open_in_memory().unwrap();
+        let project = track(&db, "/code/app", "app");
+
+        db.set_version(project.id, Path::new("/tools/node"), "20.11")
+            .unwrap();
+        db.set_version(project.id, Path::new("/tools/rust"), "1.93")
+            .unwrap();
+
+        let folders: Vec<PathBuf> = db
+            .versions_for_project(project.id)
+            .unwrap()
+            .into_iter()
+            .map(|pin| pin.folder)
+            .collect();
+        assert_eq!(
+            folders,
+            [PathBuf::from("/tools/node"), PathBuf::from("/tools/rust")]
+        );
+    }
+
+    #[test]
+    fn unpinning_a_folder_reports_whether_there_was_one() {
+        let db = Database::open_in_memory().unwrap();
+        let project = track(&db, "/code/api", "api");
+        db.set_version(project.id, Path::new("/tools/node"), "20.11")
+            .unwrap();
+
+        assert!(
+            db.unset_version(project.id, Path::new("/tools/node"))
+                .unwrap()
+        );
+        assert!(db.versions_for_project(project.id).unwrap().is_empty());
+        assert!(
+            !db.unset_version(project.id, Path::new("/tools/node"))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn untracking_a_project_drops_its_pins() {
+        let db = Database::open_in_memory().unwrap();
+        let project = track(&db, "/code/api", "api");
+        db.set_version(project.id, Path::new("/tools/node"), "20.11")
+            .unwrap();
+
+        db.remove_project(project.id).unwrap();
+
+        // `ON DELETE CASCADE` plus `PRAGMA foreign_keys = ON`: the pin has no
+        // project left to belong to, so it goes with it rather than being
+        // orphaned the way an unregistered vManager folder's archives are.
+        assert!(db.versions_for_project(project.id).unwrap().is_empty());
     }
 
     #[test]

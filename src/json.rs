@@ -391,6 +391,41 @@ pub struct MissingProject {
     pub path: String,
 }
 
+/// `pmanager project set-version`
+#[derive(Debug, Serialize)]
+pub struct VersionPinned {
+    pub project: String,
+    /// The vManager-registered folder holding the tool's versions.
+    pub folder: String,
+    pub version: String,
+}
+
+/// `pmanager project unset-version`
+#[derive(Debug, Serialize)]
+pub struct VersionUnpinned {
+    pub project: String,
+    pub folder: String,
+    /// False when there was no pin for this folder to begin with.
+    pub removed: bool,
+}
+
+/// `pmanager use`
+#[derive(Debug, Serialize)]
+pub struct UseReport {
+    pub project: String,
+    pub switches: Vec<VersionSwitch>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VersionSwitch {
+    pub folder: String,
+    pub version: String,
+    /// Whether `vmanager use` succeeded for this pin. The others are still
+    /// attempted when one fails.
+    pub applied: bool,
+    pub error: Option<String>,
+}
+
 /// `pmanager restore`
 #[derive(Debug, Serialize)]
 pub struct Restored {

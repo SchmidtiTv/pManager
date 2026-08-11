@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod logging;
 pub mod progress;
 pub mod scan;
+pub mod vmanager;
 
 pub use cli::Cli;
 pub use error::{Error, Result};
@@ -35,6 +36,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Info(args) => commands::info::run(args, &ctx),
         Command::Project(args) => commands::project::run(args, &ctx),
         Command::Restore(args) => commands::restore::run(args, &ctx),
+        Command::Use(args) => commands::r#use::run(args, &ctx),
         Command::Schedule(args) => commands::schedule::run(args, &ctx),
         Command::Completions(args) => commands::completions::run(args, &ctx),
     }
