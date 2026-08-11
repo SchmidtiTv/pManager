@@ -153,6 +153,16 @@ pub struct VersionPin {
     pub version: String,
 }
 
+/// A [`VersionPin`] together with the project that set it — what `pmanager
+/// pins` reports and what `vmanager run` asks for (via `pmanager pins
+/// --json`) to learn which versions to leave alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectPin {
+    pub project: String,
+    pub folder: PathBuf,
+    pub version: String,
+}
+
 /// An open connection to the pManager database.
 #[derive(Debug)]
 pub struct Database {
@@ -376,6 +386,27 @@ impl Database {
             Ok(VersionPin {
                 folder: PathBuf::from(row.get::<_, String>(0)?),
                 version: row.get(1)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Every version pin across every tracked project, folder then project
+    /// name — what `pmanager pins` reports and `vmanager run` reads (via
+    /// `pmanager pins --json`) so it never archives a version out from under
+    /// a project that still points at it.
+    pub fn all_version_pins(&self) -> Result<Vec<ProjectPin>> {
+        let mut statement = self.conn.prepare(
+            "SELECT p.name, pv.folder, pv.version
+               FROM project_versions pv
+               JOIN projects p ON p.id = pv.project_id
+              ORDER BY pv.folder, p.name COLLATE NOCASE",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(ProjectPin {
+                project: row.get(0)?,
+                folder: PathBuf::from(row.get::<_, String>(1)?),
+                version: row.get(2)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -752,6 +783,53 @@ mod tests {
         // project left to belong to, so it goes with it rather than being
         // orphaned the way an unregistered vManager folder's archives are.
         assert!(db.versions_for_project(project.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn all_version_pins_lists_every_pin_across_projects() {
+        let db = Database::open_in_memory().unwrap();
+        let api = track(&db, "/code/api", "api");
+        let app = track(&db, "/code/app", "app");
+
+        db.set_version(api.id, Path::new("/tools/node"), "20.11")
+            .unwrap();
+        db.set_version(app.id, Path::new("/tools/node"), "18.20")
+            .unwrap();
+        db.set_version(app.id, Path::new("/tools/rust"), "1.93")
+            .unwrap();
+
+        let pins = db.all_version_pins().unwrap();
+        assert_eq!(pins.len(), 3);
+
+        // Ordered by folder, then project name — /tools/node's two pins
+        // before /tools/rust's one, "api" before "app" within /tools/node.
+        assert_eq!(pins[0].folder, PathBuf::from("/tools/node"));
+        assert_eq!(pins[0].project, "api");
+        assert_eq!(pins[0].version, "20.11");
+        assert_eq!(pins[1].folder, PathBuf::from("/tools/node"));
+        assert_eq!(pins[1].project, "app");
+        assert_eq!(pins[1].version, "18.20");
+        assert_eq!(pins[2].folder, PathBuf::from("/tools/rust"));
+        assert_eq!(pins[2].project, "app");
+    }
+
+    #[test]
+    fn no_pins_is_an_empty_list_not_an_error() {
+        let db = Database::open_in_memory().unwrap();
+        track(&db, "/code/api", "api");
+        assert!(db.all_version_pins().unwrap().is_empty());
+    }
+
+    #[test]
+    fn untracking_a_project_drops_it_from_all_version_pins_too() {
+        let db = Database::open_in_memory().unwrap();
+        let api = track(&db, "/code/api", "api");
+        db.set_version(api.id, Path::new("/tools/node"), "20.11")
+            .unwrap();
+
+        db.remove_project(api.id).unwrap();
+
+        assert!(db.all_version_pins().unwrap().is_empty());
     }
 
     #[test]

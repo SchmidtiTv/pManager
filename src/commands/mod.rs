@@ -7,6 +7,7 @@
 pub mod completions;
 pub mod info;
 pub mod list;
+pub mod pins;
 pub mod project;
 pub mod restore;
 pub mod run;

@@ -35,6 +35,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::List(args) => commands::list::run(args, &ctx),
         Command::Info(args) => commands::info::run(args, &ctx),
         Command::Project(args) => commands::project::run(args, &ctx),
+        Command::Pins(args) => commands::pins::run(args, &ctx),
         Command::Restore(args) => commands::restore::run(args, &ctx),
         Command::Use(args) => commands::r#use::run(args, &ctx),
         Command::Schedule(args) => commands::schedule::run(args, &ctx),

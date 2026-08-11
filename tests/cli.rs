@@ -1085,6 +1085,87 @@ fn pinning_a_version_reports_it_and_unset_removes_it() {
 }
 
 #[test]
+fn pins_reports_nothing_pinned() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "app", 1);
+    track(&config, &path);
+
+    pmanager()
+        .args(["pins", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no project pins a version yet"));
+}
+
+#[test]
+fn pins_lists_every_pin_across_projects() {
+    let (dir, config) = isolated();
+    let app = project(dir.path(), "app", 1);
+    let api = project(dir.path(), "api", 1);
+    track(&config, &app);
+    track(&config, &api);
+    let tools = dir.path().join("tools").join("node");
+    std::fs::create_dir_all(&tools).unwrap();
+
+    pmanager()
+        .args(["project", "set-version", "app"])
+        .arg(&tools)
+        .arg("20.11")
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+    pmanager()
+        .args(["project", "set-version", "api"])
+        .arg(&tools)
+        .arg("18.20")
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    pmanager()
+        .args(["pins", "--config"])
+        .arg(&config)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("20.11"))
+        .stdout(predicate::str::contains("18.20"))
+        .stdout(predicate::str::contains("app"))
+        .stdout(predicate::str::contains("api"))
+        .stdout(predicate::str::contains("2 pin(s)"));
+}
+
+/// The document `vmanager run` parses via `pmanager pins --json`.
+#[test]
+fn pins_are_reported_as_json() {
+    let (dir, config) = isolated();
+    let path = project(dir.path(), "app", 1);
+    track(&config, &path);
+    let tools = dir.path().join("tools").join("node");
+    std::fs::create_dir_all(&tools).unwrap();
+
+    pmanager()
+        .args(["project", "set-version", "app"])
+        .arg(&tools)
+        .arg("20.11")
+        .arg("--config")
+        .arg(&config)
+        .assert()
+        .success();
+
+    pmanager()
+        .args(["pins", "--config"])
+        .arg(&config)
+        .arg("--json")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"version\": \"20.11\""))
+        .stdout(predicate::str::contains("\"project\": \"app\""));
+}
+
+#[test]
 fn use_with_no_pins_explains_how_to_set_one() {
     let (dir, config) = isolated();
     let path = project(dir.path(), "app", 1);

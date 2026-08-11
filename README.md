@@ -66,6 +66,7 @@ pmanager [OPTIONS] <COMMAND>
 | `project prune` | Stop tracking projects whose folder is gone |
 | `project set-version <PROJECT> <FOLDER> <VERSION>` | Pin a project to a version of a vManager-managed tool |
 | `project unset-version <PROJECT> <FOLDER>` | Remove a pin |
+| `pins` | Show every version pin on record — what `vmanager run` reads |
 | `use <PROJECT>` | Switch vManager to the versions a project is pinned to |
 | `restore <PROJECT>` | Extract an archived project and put it back to work |
 | `schedule install` | Register the daily run with the platform scheduler (Task Scheduler / launchd) |
@@ -496,6 +497,27 @@ the command fails explaining that rather than pretending to have switched
 anything. Removing a project (`pmanager project remove`) drops its pins along
 with it — there is nothing left to switch to once the project itself is
 untracked.
+
+### Keeping vManager from sweeping a pinned version away
+
+`vmanager run` archives whatever versions have aged out of the newest few it
+is told to keep — it has no idea a project still wants an older one, unless
+told. `pmanager pins` is that telling:
+
+```
+$ pmanager pins
+C:\Tools\Node  14.21  legacy-tool
+C:\Tools\Node  20.11  api-server
+
+2 pin(s)
+```
+
+`vmanager run` calls `pmanager pins --json` on every sweep and leaves any
+version it names unpacked, no matter how old, as long as `pmanager` is
+installed and on `PATH` — the same requirement `pmanager use` has of
+vManager, just in the other direction. A machine without pManager installed
+sees no difference at all: vManager sweeps by the newest-few rule alone, as
+it always has.
 
 See vManager's own README for the other half of this: how `current` is
 implemented, and why it is a directory junction on Windows rather than the
