@@ -11,6 +11,7 @@ pub mod project;
 pub mod restore;
 pub mod run;
 pub mod schedule;
+pub mod r#use;
 
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
