@@ -18,6 +18,7 @@ Getting started:
   pmanager run --yes                     Carry it out
   pmanager project set-version api C:\\Tools\\Node 20.11   Pin a version
   pmanager use api                       Switch vManager to it
+  pmanager pins                          Show every pin (what vManager reads)
   pmanager schedule install              …every day at 03:00
   pmanager completions --help            Complete commands as you type them
   pmanager list --json                   The same, as data for a script
@@ -173,6 +174,12 @@ pub enum Command {
     /// Track and untrack the projects that `pmanager run` watches
     Project(crate::commands::project::Args),
 
+    /// Show every version pin on record, across every tracked project
+    ///
+    /// This is what `vmanager run` reads (via `--json`) to learn which
+    /// versions to leave alone even after they age out of the newest few.
+    Pins(crate::commands::pins::Args),
+
     /// Extract an archived project and put it back to work
     Restore(crate::commands::restore::Args),
 
@@ -230,6 +237,7 @@ mod tests {
             &["project", "add", "."],
             &["project", "set-version", "api", "C:\\Tools\\Node", "20.11"],
             &["project", "unset-version", "api", "C:\\Tools\\Node"],
+            &["pins"],
             &["restore", "api"],
             &["use", "api"],
             &["schedule", "status"],

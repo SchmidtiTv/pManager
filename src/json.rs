@@ -409,6 +409,21 @@ pub struct VersionUnpinned {
     pub removed: bool,
 }
 
+/// `pmanager pins`
+#[derive(Debug, Serialize)]
+pub struct Pins {
+    pub pins: Vec<Pin>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Pin {
+    /// The vManager-registered folder holding the tool's versions.
+    pub folder: String,
+    pub version: String,
+    /// The project that pinned it.
+    pub project: String,
+}
+
 /// `pmanager use`
 #[derive(Debug, Serialize)]
 pub struct UseReport {
