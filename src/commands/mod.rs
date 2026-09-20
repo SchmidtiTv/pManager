@@ -4,6 +4,7 @@
 //! one variant on [`Commands`], and one arm in the match below. Forgetting the
 //! arm is a compile error, which is the point.
 
+pub mod auto_run;
 pub mod list;
 pub mod project;
 pub mod reload;
@@ -23,6 +24,9 @@ pub trait Command {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Manage the scheduled background run
+    AutoRun(auto_run::AutoRun),
+
     /// List all registered projects
     List(list::List),
 
@@ -42,6 +46,7 @@ pub enum Commands {
 impl Command for Commands {
     fn run(&self, cx: &mut Cx) -> Result<()> {
         match self {
+            Commands::AutoRun(c) => c.run(cx),
             Commands::List(c) => c.run(cx),
             Commands::Project(c) => c.run(cx),
             Commands::Reload(c) => c.run(cx),

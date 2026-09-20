@@ -5,6 +5,7 @@ pub mod commands;
 pub mod context;
 pub mod error;
 pub mod paths;
+pub mod scheduler;
 
 use std::process::ExitCode;
 

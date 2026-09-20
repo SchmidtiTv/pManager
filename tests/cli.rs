@@ -169,3 +169,41 @@ fn project_cleanup_reports_that_it_is_not_implemented() {
         .failure()
         .stderr(contains("`pman project cleanup` is not implemented yet"));
 }
+
+#[test]
+fn auto_run_group_is_spelled_with_a_hyphen() {
+    pman()
+        .args(["auto-run", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("Commands:"));
+}
+
+#[test]
+fn auto_run_group_exposes_two_nested_subcommands() {
+    for leaf in ["add", "remove"] {
+        pman()
+            .args(["auto-run", leaf, "--help"])
+            .assert()
+            .success()
+            .stdout(contains(format!("pman auto-run {leaf}")));
+    }
+}
+
+#[test]
+fn auto_run_add_reports_that_it_is_not_implemented() {
+    pman()
+        .args(["auto-run", "add"])
+        .assert()
+        .failure()
+        .stderr(contains("`pman auto-run add` is not implemented yet"));
+}
+
+#[test]
+fn auto_run_remove_reports_that_it_is_not_implemented() {
+    pman()
+        .args(["auto-run", "remove"])
+        .assert()
+        .failure()
+        .stderr(contains("`pman auto-run remove` is not implemented yet"));
+}
