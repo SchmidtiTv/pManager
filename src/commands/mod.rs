@@ -6,6 +6,8 @@
 
 pub mod list;
 pub mod reload;
+pub mod restore;
+pub mod run;
 
 use clap::Subcommand;
 
@@ -25,6 +27,12 @@ pub enum Commands {
 
     /// Re-read strip profiles from disk
     Reload(reload::Reload),
+
+    /// Evaluate every project and execute what is due
+    Run(run::Run),
+
+    /// Restore an archived project
+    Restore(restore::Restore),
 }
 
 impl Command for Commands {
@@ -32,6 +40,8 @@ impl Command for Commands {
         match self {
             Commands::List(c) => c.run(cx),
             Commands::Reload(c) => c.run(cx),
+            Commands::Run(c) => c.run(cx),
+            Commands::Restore(c) => c.run(cx),
         }
     }
 }
