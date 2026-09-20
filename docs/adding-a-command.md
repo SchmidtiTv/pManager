@@ -81,4 +81,15 @@ cargo deny check    # the licence allowlist is deliberately narrow
 ```
 
 Add your command to the `SURFACE` table in `tests/cli.rs` so a later rename
-cannot quietly drop it.
+cannot quietly drop it:
+
+```rust
+    (&["vacuum"], "`pman vacuum` is not implemented yet"),
+```
+
+Assert the *full* `pman <path>` message, not just a fragment. Every stub ends
+in "is not implemented yet", so a check for that suffix alone passes no
+matter which stub actually ran — it cannot tell `vacuum`'s stub from
+`list`'s, and it would stay green even if `vacuum` were accidentally wired to
+someone else's dispatch arm. The full message is the only part that names
+which command actually answered.
