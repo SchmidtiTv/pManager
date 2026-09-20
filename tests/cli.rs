@@ -30,3 +30,41 @@ fn help_lists_every_global_flag() {
 fn an_unknown_flag_is_rejected() {
     pman().arg("--definitely-not-a-flag").assert().failure();
 }
+
+#[test]
+fn running_with_no_command_fails_and_shows_usage() {
+    pman().assert().failure().stderr(contains("Usage"));
+}
+
+#[test]
+fn list_reports_that_it_is_not_implemented() {
+    pman()
+        .arg("list")
+        .assert()
+        .failure()
+        .stderr(contains("`pman list` is not implemented yet"));
+}
+
+#[test]
+fn reload_reports_that_it_is_not_implemented() {
+    pman()
+        .arg("reload")
+        .assert()
+        .failure()
+        .stderr(contains("`pman reload` is not implemented yet"));
+}
+
+#[test]
+fn a_stub_does_not_create_a_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("pmanager.db");
+
+    pman()
+        .arg("--db")
+        .arg(&db)
+        .arg("list")
+        .assert()
+        .failure();
+
+    assert!(!db.exists(), "a stub must not create the database");
+}
