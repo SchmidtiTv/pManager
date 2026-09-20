@@ -28,9 +28,8 @@ impl Cx {
                 })?;
             }
 
-            let conn = Connection::open(&self.paths.db).with_context(|| {
-                format!("could not open database {}", self.paths.db.display())
-            })?;
+            let conn = Connection::open(&self.paths.db)
+                .with_context(|| format!("could not open database {}", self.paths.db.display()))?;
 
             self.db = Some(conn);
         }
@@ -58,7 +57,10 @@ mod tests {
     fn constructing_a_context_does_not_touch_the_disk() {
         let tmp = tempfile::tempdir().unwrap();
         let cx = cx_in(tmp.path());
-        assert!(!cx.paths.db.exists(), "database must not be created eagerly");
+        assert!(
+            !cx.paths.db.exists(),
+            "database must not be created eagerly"
+        );
     }
 
     #[test]
