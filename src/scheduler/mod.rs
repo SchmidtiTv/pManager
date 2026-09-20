@@ -48,6 +48,11 @@ mod tests {
     /// some unrelated reason.
     #[test]
     fn the_platform_scheduler_is_honestly_unimplemented() {
+        #[cfg(unix)]
+        let expected = "the systemd scheduler is not implemented yet";
+        #[cfg(windows)]
+        let expected = "the Windows Task Scheduler backend is not implemented yet";
+
         let scheduler =
             for_this_platform().expect("a scheduler should be available on this platform");
 
@@ -55,16 +60,16 @@ mod tests {
             .install()
             .expect_err("install must not silently succeed");
         assert!(
-            format!("{install_err:#}").contains("the systemd scheduler is not implemented yet"),
-            "install error should name the systemd scheduler as not implemented, got: {install_err:#}"
+            format!("{install_err:#}").contains(expected),
+            "install error should name the platform scheduler as not implemented, got: {install_err:#}"
         );
 
         let remove_err = scheduler
             .remove()
             .expect_err("remove must not silently succeed");
         assert!(
-            format!("{remove_err:#}").contains("the systemd scheduler is not implemented yet"),
-            "remove error should name the systemd scheduler as not implemented, got: {remove_err:#}"
+            format!("{remove_err:#}").contains(expected),
+            "remove error should name the platform scheduler as not implemented, got: {remove_err:#}"
         );
     }
 }

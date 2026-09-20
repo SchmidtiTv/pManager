@@ -206,4 +206,4 @@ are never blocked on a TTY.
 Database schema and migrations; project-type detection; the 60/120/160-day
 calculation; `.pmanagerignore` handling; strip-profile format and parsing; 7z
 pack and unpack; systemd unit generation. The `Scheduler` trait in `scheduler/` and its
-`#[cfg]`-gated modules are created here, with `todo!()` bodies.
+`#[cfg]`-gated modules are created here, with `anyhow::bail!` bodies.
