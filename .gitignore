@@ -1,0 +1,8 @@
+/target
+
+# JetBrains
+.idea/
+*.iml
+
+# superpowers subagent-driven-development scratch workspace
+/.superpowers
