@@ -100,3 +100,60 @@ fn restore_reports_that_it_is_not_implemented() {
         .failure()
         .stderr(contains("`pman restore` is not implemented yet"));
 }
+
+#[test]
+fn project_group_help_lists_its_subcommands() {
+    pman()
+        .args(["project", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("add"))
+        .stdout(contains("remove"))
+        .stdout(contains("cleanup"));
+}
+
+#[test]
+fn project_without_a_subcommand_fails() {
+    pman().arg("project").assert().failure();
+}
+
+#[test]
+fn project_add_requires_a_path() {
+    pman().args(["project", "add"]).assert().failure();
+}
+
+#[test]
+fn project_add_reports_that_it_is_not_implemented() {
+    pman()
+        .args(["project", "add", "/tmp/somewhere"])
+        .assert()
+        .failure()
+        .stderr(contains("`pman project add` is not implemented yet"));
+}
+
+#[test]
+fn project_add_accepts_a_name_flag() {
+    pman()
+        .args(["project", "add", "/tmp/somewhere", "--name", "thing"])
+        .assert()
+        .failure()
+        .stderr(contains("not implemented yet"));
+}
+
+#[test]
+fn project_remove_reports_that_it_is_not_implemented() {
+    pman()
+        .args(["project", "remove", "/tmp/somewhere"])
+        .assert()
+        .failure()
+        .stderr(contains("`pman project remove` is not implemented yet"));
+}
+
+#[test]
+fn project_cleanup_reports_that_it_is_not_implemented() {
+    pman()
+        .args(["project", "cleanup"])
+        .assert()
+        .failure()
+        .stderr(contains("`pman project cleanup` is not implemented yet"));
+}
