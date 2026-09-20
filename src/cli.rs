@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Parser};
 use tracing_subscriber::EnvFilter;
 
+use crate::commands::Commands;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "pman",
@@ -15,6 +17,9 @@ use tracing_subscriber::EnvFilter;
 pub struct Cli {
     #[command(flatten)]
     pub global: GlobalArgs,
+
+    #[command(subcommand)]
+    pub command: Commands,
 }
 
 #[derive(Args, Debug)]
