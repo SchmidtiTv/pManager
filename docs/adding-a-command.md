@@ -30,6 +30,15 @@ impl Command for Vacuum {
 }
 ```
 
+`cx.db()` takes `&mut self` and hands back a borrow tied to that
+`&mut`, which then blocks any further access to `cx` (including
+`cx.paths`) for as long as the borrow lives — you'll hit E0502 the moment
+you try to read anything else off `cx` after calling it. Read what you
+need from `cx.paths` before calling `cx.db()`, or clone the values you
+need out of `Paths` first. This is a known rough edge in `Cx`'s ergonomics
+and is being revisited in a later spec, not something to work around with
+cleverness here.
+
 Note the trait import: a top-level file like this one sits directly inside
 `src/commands/`, so `super` is `crate::commands` and `use super::Command;`
 resolves. A file inside a group directory, such as
@@ -76,8 +85,10 @@ matches over it. Then register the group at the root like any other command.
 ## Before you commit
 
 ```bash
-cargo test          # includes Cli::command().debug_assert()
-cargo deny check    # the licence allowlist is deliberately narrow
+cargo test                                  # includes Cli::command().debug_assert()
+cargo fmt --check                           # formatting must be clean before review
+cargo clippy --all-targets -- -D warnings   # no warnings allowed
+cargo deny check                            # the licence allowlist is deliberately narrow
 ```
 
 Add your command to the `SURFACE` table in `tests/cli.rs` so a later rename

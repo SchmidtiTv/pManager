@@ -45,6 +45,22 @@ pub struct GlobalArgs {
 ///
 /// Writes to stderr so that command output on stdout stays pipeable, and uses
 /// `try_init` so repeated calls inside one test process are harmless.
+///
+/// The filter always carries a global `error` floor, so that a `RUST_LOG`
+/// which scopes down some unrelated dependency (e.g. `RUST_LOG=git2=debug`)
+/// can never silence pManager's own error reporting -- that reporting is the
+/// CLI's only channel for telling the user why it failed.
+///
+/// Note this floor cannot be provided by `EnvFilter::builder`'s
+/// `with_default_directive`: that default is only applied when the parsed
+/// directive string is *entirely* empty. `RUST_LOG=git2=debug` parses to one
+/// non-empty (but narrowly scoped) directive, so the default is skipped and
+/// every other target -- including pManager's own -- is left with no
+/// matching directive at all, which `EnvFilter` treats as disabled. Instead,
+/// an explicit `error` directive is always prepended to whatever `RUST_LOG`
+/// contains; a later, more permissive directive for the same (global) target
+/// still wins, because `EnvFilter` keeps only the most recently added
+/// directive per target.
 pub fn init_tracing(verbose: u8, quiet: bool) {
     let fallback = if quiet {
         "error"
@@ -56,7 +72,14 @@ pub fn init_tracing(verbose: u8, quiet: bool) {
         }
     };
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(fallback));
+    let directives = match std::env::var("RUST_LOG") {
+        Ok(rust_log) => format!("error,{rust_log}"),
+        Err(_) => fallback.to_string(),
+    };
+
+    let filter = EnvFilter::builder()
+        .with_default_directive(tracing::level_filters::LevelFilter::ERROR.into())
+        .parse_lossy(directives);
 
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)

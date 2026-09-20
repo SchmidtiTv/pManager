@@ -32,6 +32,24 @@ fn an_unknown_flag_is_rejected() {
 }
 
 #[test]
+fn an_unknown_command_is_rejected() {
+    pman().arg("bogus").assert().failure();
+}
+
+#[test]
+fn help_mentions_the_strip_dir_env_var() {
+    // clap renders `[env: PMANAGER_STRIP_DIR=]` in `--help` only when the
+    // `env = "PMANAGER_STRIP_DIR"` attribute is actually present on the
+    // field. Deleting that attribute breaks no other test, so this is the
+    // one guarding it stays wired up.
+    pman()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("PMANAGER_STRIP_DIR"));
+}
+
+#[test]
 fn running_with_no_command_fails_and_shows_usage() {
     pman().assert().failure().stderr(contains("Usage"));
 }
@@ -40,6 +58,33 @@ fn running_with_no_command_fails_and_shows_usage() {
 fn list_reports_that_it_is_not_implemented() {
     pman()
         .arg("list")
+        .assert()
+        .failure()
+        .stderr(contains("`pman list` is not implemented yet"));
+}
+
+#[test]
+fn a_failing_stub_writes_nothing_to_stdout() {
+    // Log output -- including the error report -- must go to stderr only, so
+    // that command output on stdout stays pipeable even when a command
+    // fails.
+    pman()
+        .arg("list")
+        .assert()
+        .failure()
+        .stdout(predicates::str::is_empty());
+}
+
+#[test]
+fn an_unrelated_rust_log_directive_does_not_silence_errors() {
+    // Regression test: EnvFilter::try_from_default_env() has no default
+    // directive, so a RUST_LOG that scopes some other crate (e.g.
+    // `git2=debug`) used to replace the whole filter and swallow every
+    // `tracing::error!` from pManager itself, leaving a bare `exit 1` with
+    // no output at all. The filter must always carry an ERROR default.
+    pman()
+        .arg("list")
+        .env("RUST_LOG", "git2=debug")
         .assert()
         .failure()
         .stderr(contains("`pman list` is not implemented yet"));
