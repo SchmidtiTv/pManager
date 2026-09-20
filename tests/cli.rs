@@ -59,12 +59,7 @@ fn a_stub_does_not_create_a_database() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("pmanager.db");
 
-    pman()
-        .arg("--db")
-        .arg(&db)
-        .arg("list")
-        .assert()
-        .failure();
+    pman().arg("--db").arg(&db).arg("list").assert().failure();
 
     assert!(!db.exists(), "a stub must not create the database");
 }
@@ -89,7 +84,11 @@ fn run_accepts_dry_run() {
 
 #[test]
 fn restore_requires_a_name() {
-    pman().arg("restore").assert().failure().stderr(contains("NAME"));
+    pman()
+        .arg("restore")
+        .assert()
+        .failure()
+        .stderr(contains("NAME"));
 }
 
 #[test]
@@ -206,4 +205,44 @@ fn auto_run_remove_reports_that_it_is_not_implemented() {
         .assert()
         .failure()
         .stderr(contains("`pman auto-run remove` is not implemented yet"));
+}
+
+/// Every command in the spec, with the arguments needed to reach its body.
+/// A command that is renamed or dropped by accident fails here.
+const SURFACE: &[&[&str]] = &[
+    &["list"],
+    &["run"],
+    &["restore", "a-name"],
+    &["reload"],
+    &["project", "add", "/tmp/x"],
+    &["project", "remove", "/tmp/x"],
+    &["project", "cleanup"],
+    &["auto-run", "add"],
+    &["auto-run", "remove"],
+];
+
+#[test]
+fn every_documented_command_is_reachable_and_honest() {
+    for args in SURFACE {
+        pman()
+            .args(*args)
+            .assert()
+            .failure()
+            .stderr(contains("is not implemented yet"));
+    }
+}
+
+#[test]
+fn help_renders_at_every_level_of_the_tree() {
+    for args in [
+        vec!["--help"],
+        vec!["project", "--help"],
+        vec!["project", "add", "--help"],
+        vec!["auto-run", "--help"],
+        vec!["auto-run", "add", "--help"],
+        vec!["run", "--help"],
+        vec!["restore", "--help"],
+    ] {
+        pman().args(&args).assert().success();
+    }
 }
