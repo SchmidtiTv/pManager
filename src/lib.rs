@@ -1,6 +1,7 @@
 //! pManager — ages out dormant local projects to reclaim disk space.
 
 pub mod cli;
+pub mod context;
 pub mod error;
 pub mod paths;
 
