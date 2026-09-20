@@ -1,0 +1,37 @@
+[package]
+name = "pmanager"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "pman"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+clap = { version = "4.6.7", features = ["derive"] }
+dialoguer = "0.11"
+dirs = "7.0.0"
+# No default features: drops openssl-sys/libssh2-sys network transport.
+# Only local repository inspection is needed (status, commits, timestamps).
+git2 = { version = "0.21.0", default-features = false }
+ignore = "0.4.33"
+indicatif = "0.18.6"
+owo-colors = "4.4.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# The default bzip2 and ppmd features pull licenses outside the deny.toml
+# allowlist (bzip2-1.0.6, CC0-1.0). LZMA/LZMA2 covers the codecs we write.
+sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["aes256", "compress", "util"] }
+thiserror = "2.0.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+walkdir = "2.5.0"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+tempfile = "3.27.0"
