@@ -207,28 +207,50 @@ fn auto_run_remove_reports_that_it_is_not_implemented() {
         .stderr(contains("`pman auto-run remove` is not implemented yet"));
 }
 
-/// Every command in the spec, with the arguments needed to reach its body.
-/// A command that is renamed or dropped by accident fails here.
-const SURFACE: &[&[&str]] = &[
-    &["list"],
-    &["run"],
-    &["restore", "a-name"],
-    &["reload"],
-    &["project", "add", "/tmp/x"],
-    &["project", "remove", "/tmp/x"],
-    &["project", "cleanup"],
-    &["auto-run", "add"],
-    &["auto-run", "remove"],
+/// Every command in the spec, with the arguments needed to reach its body,
+/// paired with the exact message its stub must print. Every stub ends in
+/// "is not implemented yet", so checking only that suffix cannot tell one
+/// command's stub from another's; a command that is renamed, dropped, or
+/// wired to the wrong dispatch arm by accident fails here because the full
+/// `pman <path>` prefix is checked too.
+const SURFACE: &[(&[&str], &str)] = &[
+    (&["list"], "`pman list` is not implemented yet"),
+    (&["run"], "`pman run` is not implemented yet"),
+    (
+        &["restore", "a-name"],
+        "`pman restore` is not implemented yet",
+    ),
+    (&["reload"], "`pman reload` is not implemented yet"),
+    (
+        &["project", "add", "/tmp/x"],
+        "`pman project add` is not implemented yet",
+    ),
+    (
+        &["project", "remove", "/tmp/x"],
+        "`pman project remove` is not implemented yet",
+    ),
+    (
+        &["project", "cleanup"],
+        "`pman project cleanup` is not implemented yet",
+    ),
+    (
+        &["auto-run", "add"],
+        "`pman auto-run add` is not implemented yet",
+    ),
+    (
+        &["auto-run", "remove"],
+        "`pman auto-run remove` is not implemented yet",
+    ),
 ];
 
 #[test]
 fn every_documented_command_is_reachable_and_honest() {
-    for args in SURFACE {
+    for (args, expected) in SURFACE {
         pman()
             .args(*args)
             .assert()
             .failure()
-            .stderr(contains("is not implemented yet"));
+            .stderr(contains(*expected));
     }
 }
 
