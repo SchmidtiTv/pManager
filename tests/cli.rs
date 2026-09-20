@@ -84,7 +84,7 @@ fn run_accepts_dry_run() {
         .args(["run", "--dry-run"])
         .assert()
         .failure()
-        .stderr(contains("not implemented yet"));
+        .stderr(contains("`pman run` is not implemented yet"));
 }
 
 #[test]
@@ -107,9 +107,21 @@ fn project_group_help_lists_its_subcommands() {
         .args(["project", "--help"])
         .assert()
         .success()
+        .stdout(contains("Commands:"))
         .stdout(contains("add"))
         .stdout(contains("remove"))
         .stdout(contains("cleanup"));
+}
+
+#[test]
+fn project_group_exposes_three_nested_subcommands() {
+    for leaf in ["add", "remove", "cleanup"] {
+        pman()
+            .args(["project", leaf, "--help"])
+            .assert()
+            .success()
+            .stdout(contains(format!("pman project {leaf}")));
+    }
 }
 
 #[test]
@@ -137,7 +149,7 @@ fn project_add_accepts_a_name_flag() {
         .args(["project", "add", "/tmp/somewhere", "--name", "thing"])
         .assert()
         .failure()
-        .stderr(contains("not implemented yet"));
+        .stderr(contains("`pman project add` is not implemented yet"));
 }
 
 #[test]
