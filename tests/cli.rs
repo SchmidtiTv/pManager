@@ -68,3 +68,35 @@ fn a_stub_does_not_create_a_database() {
 
     assert!(!db.exists(), "a stub must not create the database");
 }
+
+#[test]
+fn run_reports_that_it_is_not_implemented() {
+    pman()
+        .arg("run")
+        .assert()
+        .failure()
+        .stderr(contains("`pman run` is not implemented yet"));
+}
+
+#[test]
+fn run_accepts_dry_run() {
+    pman()
+        .args(["run", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(contains("not implemented yet"));
+}
+
+#[test]
+fn restore_requires_a_name() {
+    pman().arg("restore").assert().failure().stderr(contains("NAME"));
+}
+
+#[test]
+fn restore_reports_that_it_is_not_implemented() {
+    pman()
+        .args(["restore", "my-project"])
+        .assert()
+        .failure()
+        .stderr(contains("`pman restore` is not implemented yet"));
+}
