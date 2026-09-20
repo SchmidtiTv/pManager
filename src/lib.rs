@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod error;
+pub mod paths;
 
 use std::process::ExitCode;
 
