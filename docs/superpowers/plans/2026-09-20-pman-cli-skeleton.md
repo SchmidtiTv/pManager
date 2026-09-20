@@ -476,20 +476,24 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut cx = cx_in(tmp.path());
 
-        cx.db().unwrap().execute_batch("CREATE TABLE marker (id INTEGER)").unwrap();
+        // A TEMP table lives on the connection, not in the file. If `db()`
+        // reopened the database, the second call would not see it -- which is
+        // exactly what makes this a test of reuse rather than of persistence.
+        cx.db()
+            .unwrap()
+            .execute_batch("CREATE TEMP TABLE marker (id INTEGER)")
+            .unwrap();
 
-        // A second call must hand back the same live connection, so the
-        // temporary table created above is still visible.
         let count: i64 = cx
             .db()
             .unwrap()
             .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name = 'marker'",
+                "SELECT count(*) FROM sqlite_temp_master WHERE name = 'marker'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 1, "db() must hand back the same live connection");
     }
 }
 ```
