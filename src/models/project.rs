@@ -14,17 +14,15 @@ use crate::models::state::ProjectState;
 pub struct Project {
     pub name: String,
     pub path: PathBuf,
-    pub kind: String,
     pub state: ProjectState,
     pub has_git_repo: bool,
     pub last_change_at: DateTime<Utc>,
     pub registered_at: DateTime<Utc>,
 }
 
-pub const COLUMNS: [&str; 8] = [
+pub const COLUMNS: [&str; 7] = [
     "name",
     "path",
-    "kind",
     "state",
     "has_git_repo",
     "archive_path",
@@ -36,7 +34,6 @@ pub fn insert(project: &Project) -> Result<Query> {
     let query = SqlBuilder::insert("projects")
         .value("name", Value::Text(project.name.clone()))
         .value("path", path_value(&project.path)?)
-        .value("kind", Value::Text(project.kind.clone()))
         .value("state", Value::Text(project.state.name().to_string()))
         .value(
             "has_git_repo",
@@ -62,6 +59,37 @@ pub fn select_all() -> Result<Query> {
     Ok(query)
 }
 
+/// Every row that would collide with registering `name` at `path`.
+pub fn select_by_name_or_path(name: &str, path: &Path) -> Result<Query> {
+    let query = SqlBuilder::select(&COLUMNS)
+        .from_table("projects")
+        .and_where(
+            "name = ? OR path = ?",
+            vec![Value::Text(name.to_string()), path_value(path)?],
+        )
+        .order_by_asc(&["name"])
+        .build()?;
+
+    Ok(query)
+}
+
+pub fn select_by_path(path: &Path) -> Result<Query> {
+    let query = SqlBuilder::select(&COLUMNS)
+        .from_table("projects")
+        .and_where("path = ?", vec![path_value(path)?])
+        .build()?;
+
+    Ok(query)
+}
+
+pub fn delete_by_path(path: &Path) -> Result<Query> {
+    let query = SqlBuilder::delete("projects")
+        .and_where("path = ?", vec![path_value(path)?])
+        .build()?;
+
+    Ok(query)
+}
+
 pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Project> {
     let path: String = row.get("path")?;
     let state: String = row.get("state")?;
@@ -70,7 +98,6 @@ pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         name: row.get("name")?,
         path: PathBuf::from(path),
-        kind: row.get("kind")?,
         state: state_from(&state, archive_path)?,
         has_git_repo: row.get("has_git_repo")?,
         last_change_at: row.get("last_change_at")?,
@@ -96,7 +123,7 @@ fn archive_path_value(project: &Project) -> Value {
 fn state_from(state: &str, archive_path: Option<String>) -> rusqlite::Result<ProjectState> {
     let invalid = |reason: String| {
         rusqlite::Error::FromSqlConversionFailure(
-            3,
+            2,
             rusqlite::types::Type::Text,
             Box::new(FromSqlError::Other(reason.into())),
         )
@@ -122,7 +149,11 @@ mod tests {
 
     use chrono::{TimeZone as _, Utc};
 
-    use super::{COLUMNS, Project, from_row, insert};
+    use std::path::Path;
+
+    use super::{
+        COLUMNS, Project, delete_by_path, from_row, insert, select_by_name_or_path, select_by_path,
+    };
     use crate::database::schema;
     use crate::database::sql_builder::SqlBuilder;
     use crate::database::sql_lite::SqlLite;
@@ -138,7 +169,6 @@ mod tests {
         Project {
             name: "pManager".to_string(),
             path: PathBuf::from("C:/dev/rust/pManager"),
-            kind: "rust".to_string(),
             state,
             has_git_repo: true,
             last_change_at: Utc.with_ymd_and_hms(2026, 7, 1, 8, 30, 0).unwrap(),
@@ -177,15 +207,65 @@ mod tests {
     }
 
     #[test]
+    fn a_name_or_a_path_collision_is_found() {
+        let db = applied();
+        let existing = project(ProjectState::Registered);
+        db.execute(&insert(&existing).unwrap()).unwrap();
+
+        let by_name = select_by_name_or_path("pManager", Path::new("C:/elsewhere")).unwrap();
+        let by_path = select_by_name_or_path("other", Path::new("C:/dev/rust/pManager")).unwrap();
+        let neither = select_by_name_or_path("other", Path::new("C:/elsewhere")).unwrap();
+
+        assert_eq!(
+            db.query(&by_name, from_row).unwrap(),
+            vec![existing.clone()]
+        );
+        assert_eq!(db.query(&by_path, from_row).unwrap(), vec![existing]);
+        assert!(
+            db.query(&neither, from_row).unwrap().is_empty(),
+            "an unrelated name and path must not collide"
+        );
+    }
+
+    #[test]
+    fn deleting_by_path_removes_only_that_project() {
+        let db = applied();
+        let kept = Project {
+            name: "other".to_string(),
+            path: PathBuf::from("C:/dev/rust/other"),
+            ..project(ProjectState::Registered)
+        };
+        db.execute(&insert(&project(ProjectState::Registered)).unwrap())
+            .unwrap();
+        db.execute(&insert(&kept).unwrap()).unwrap();
+
+        let deleted = db
+            .execute(&delete_by_path(Path::new("C:/dev/rust/pManager")).unwrap())
+            .unwrap();
+
+        assert_eq!(deleted, 1, "exactly one row matches the path");
+        assert_eq!(read_back(&db), vec![kept]);
+        assert!(
+            db.query(
+                &select_by_path(Path::new("C:/dev/rust/pManager")).unwrap(),
+                from_row
+            )
+            .unwrap()
+            .is_empty(),
+            "the deleted project must no longer be found by its path"
+        );
+    }
+
+    #[test]
     fn an_unreadable_state_names_the_offending_value() {
         let db = SqlLite::open_in_memory().unwrap();
         // No CHECK constraint here: this stands in for a ledger that a newer
         // version, or a text editor, has written.
         db.execute_batch(
-            "CREATE TABLE projects (name TEXT, path TEXT, kind TEXT, state TEXT,
+            "CREATE TABLE projects (name TEXT, path TEXT, state TEXT,
                 has_git_repo INTEGER, archive_path TEXT, last_change_at TEXT,
                 registered_at TEXT);
-             INSERT INTO projects VALUES ('x', 'C:/x', 'rust', 'hibernating', 1, NULL,
+             INSERT INTO projects VALUES ('x', 'C:/x', 'hibernating', 1, NULL,
                 '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00');",
         )
         .unwrap();
@@ -206,10 +286,10 @@ mod tests {
     fn a_non_archived_row_carrying_an_archive_path_is_rejected() {
         let db = SqlLite::open_in_memory().unwrap();
         db.execute_batch(
-            "CREATE TABLE projects (name TEXT, path TEXT, kind TEXT, state TEXT,
+            "CREATE TABLE projects (name TEXT, path TEXT, state TEXT,
                 has_git_repo INTEGER, archive_path TEXT, last_change_at TEXT,
                 registered_at TEXT);
-             INSERT INTO projects VALUES ('x', 'C:/x', 'rust', 'registered', 1,
+             INSERT INTO projects VALUES ('x', 'C:/x', 'registered', 1,
                 'C:/archive/x.pproject',
                 '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00');",
         )

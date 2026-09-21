@@ -1,13 +1,38 @@
+use super::sql_builder::Query;
 use super::sql_lite::SqlLite;
 use crate::error::Result;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 const PROJECTS: &str = include_str!("../../docs/sql/schema.sql");
 
+/// Version 2 dropped `projects.kind`: registration no longer consults the
+/// strip profiles, so there is nothing to store there.
+const DROP_KIND: &str = "BEGIN;
+    ALTER TABLE projects DROP COLUMN kind;
+    PRAGMA user_version = 2;
+    COMMIT;";
+
 pub fn apply(db: &SqlLite) -> Result<()> {
+    // On a ledger that predates a migration this is a no-op, because the
+    // table already exists; the migrations below then bring it up to date.
     db.execute_batch(PROJECTS)?;
+
+    if user_version(db)? == 1 {
+        db.execute_batch(DROP_KIND)?;
+    }
+
     db.execute_batch(&format!("PRAGMA user_version = {VERSION};"))
+}
+
+fn user_version(db: &SqlLite) -> Result<i64> {
+    let query = Query {
+        sql: "PRAGMA user_version;".to_string(),
+        params: Vec::new(),
+    };
+    let versions: Vec<i64> = db.query(&query, |row| row.get(0))?;
+
+    Ok(versions.first().copied().unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -38,7 +63,6 @@ mod tests {
         SqlBuilder::insert("projects")
             .value("name", text(name))
             .value("path", text(path))
-            .value("kind", text("rust"))
             .value("state", text("registered"))
             .value("has_git_repo", Value::Integer(1))
             .value("last_change_at", timestamp::to_value(sample_time()))
@@ -100,7 +124,6 @@ mod tests {
         let query = SqlBuilder::insert("projects")
             .value("name", text("pManager"))
             .value("path", text("C:/dev/rust/pManager"))
-            .value("kind", text("rust"))
             .value("state", text("hibernating"))
             .value("has_git_repo", Value::Integer(0))
             .value("last_change_at", timestamp::to_value(sample_time()))
@@ -169,6 +192,53 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(db.execute(&with_path).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_version_1_ledger_loses_its_kind_column_and_keeps_its_rows() {
+        let db = SqlLite::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE projects (
+                name TEXT NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('registered', 'stripped', 'archived')),
+                has_git_repo INTEGER NOT NULL CHECK (has_git_repo IN (0, 1)),
+                archive_path TEXT, last_change_at TEXT NOT NULL,
+                registered_at TEXT NOT NULL,
+                CHECK ((state =  'archived' AND archive_path IS NOT NULL)
+                    OR (state <> 'archived' AND archive_path IS NULL)));
+             INSERT INTO projects VALUES ('pManager', 'C:/dev/rust/pManager', 'rust',
+                'registered', 1, NULL,
+                '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00');
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+
+        apply(&db).expect("migrating a version 1 ledger should succeed");
+
+        let columns = Query {
+            sql: "SELECT name FROM pragma_table_info('projects');".to_string(),
+            params: Vec::new(),
+        };
+        let columns: Vec<String> = db.query(&columns, |row| row.get(0)).unwrap();
+        assert!(
+            !columns.contains(&"kind".to_string()),
+            "kind must be gone after the migration, got: {columns:?}"
+        );
+
+        let names = SqlBuilder::select(&["name"])
+            .from_table("projects")
+            .build()
+            .unwrap();
+        let names: Vec<String> = db.query(&names, |row| row.get(0)).unwrap();
+        assert_eq!(
+            names,
+            vec!["pManager".to_string()],
+            "migrating must not lose registered projects"
+        );
+
+        db.execute(&registration("other", "C:/dev/rust/other"))
+            .expect("a row without kind must now be insertable");
     }
 
     #[test]

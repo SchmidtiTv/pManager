@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use assert_cmd::Command;
 use chrono::{Duration, Utc};
 use pmanager::database::schema;
@@ -125,7 +127,7 @@ fn list_as_json_on_an_empty_ledger_is_still_parseable() {
 }
 
 /// Rows are written through the library rather than the CLI, because
-/// `pman project add` is still a stub.
+/// `pman project add` needs the path to exist and this one is made up.
 fn seed(db_path: &std::path::Path, name: &str, path: &str) {
     let db = SqlLite::open(db_path).unwrap();
     schema::apply(&db).unwrap();
@@ -133,7 +135,6 @@ fn seed(db_path: &std::path::Path, name: &str, path: &str) {
     let project = Project {
         name: name.to_string(),
         path: path.into(),
-        kind: "rust".to_string(),
         state: ProjectState::Registered,
         has_git_repo: true,
         last_change_at: Utc::now() - Duration::days(5),
@@ -236,31 +237,212 @@ fn project_add_requires_a_path() {
     pman().args(["project", "add"]).assert().failure();
 }
 
-#[test]
-fn project_add_reports_that_it_is_not_implemented() {
-    pman()
-        .args(["project", "add", "/tmp/somewhere"])
+/// `pman` pointed at a ledger inside `tmp`, so no test touches the real one.
+fn pman_in(tmp: &Path) -> Command {
+    let mut command = pman();
+    command.arg("--db").arg(tmp.join("pmanager.db"));
+    command
+}
+
+fn project_dir(tmp: &Path, name: &str) -> PathBuf {
+    let dir = tmp.join(name);
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("main.rs"), "fn main() {}").unwrap();
+    dir
+}
+
+fn listed_as_json(tmp: &Path) -> serde_json::Value {
+    let output = pman_in(tmp)
+        .args(["list", "--output", "json"])
         .assert()
-        .failure()
-        .stderr(contains("`pman project add` is not implemented yet"));
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    serde_json::from_slice(&output).expect("stdout is JSON")
 }
 
 #[test]
-fn project_add_accepts_a_name_flag() {
-    pman()
-        .args(["project", "add", "/tmp/somewhere", "--name", "thing"])
+fn an_added_project_shows_up_in_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = project_dir(tmp.path(), "demo");
+
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "demo"])
+        .arg(&dir)
         .assert()
-        .failure()
-        .stderr(contains("`pman project add` is not implemented yet"));
+        .success()
+        .stdout(predicates::str::is_empty())
+        .stderr(contains("registered `demo`"));
+
+    let listed = listed_as_json(tmp.path());
+    assert_eq!(listed[0]["name"], serde_json::json!("demo"));
+    assert_eq!(listed[0]["state"], serde_json::json!("registered"));
+    assert_eq!(
+        listed[0]["idle"],
+        serde_json::json!(0),
+        "a file was just written, so the project is not idle"
+    );
 }
 
 #[test]
-fn project_remove_reports_that_it_is_not_implemented() {
-    pman()
-        .args(["project", "remove", "/tmp/somewhere"])
+fn a_path_is_stored_in_one_normalised_form() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = project_dir(tmp.path(), "demo");
+
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "demo"])
+        .arg(dir.join("..").join("demo").join("."))
+        .assert()
+        .success();
+
+    let listed = listed_as_json(tmp.path());
+    let stored = listed[0]["path"].as_str().unwrap();
+    assert_eq!(
+        Path::new(stored),
+        std::fs::canonicalize(&dir).unwrap(),
+        "the roundabout spelling must be stored canonically"
+    );
+}
+
+#[test]
+fn adding_the_same_path_twice_names_the_existing_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = project_dir(tmp.path(), "demo");
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "demo"])
+        .arg(&dir)
+        .assert()
+        .success();
+
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "again"])
+        .arg(&dir)
         .assert()
         .failure()
-        .stderr(contains("`pman project remove` is not implemented yet"));
+        .stderr(contains("already registered as `demo`"));
+}
+
+#[test]
+fn a_project_name_can_only_be_used_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = project_dir(tmp.path(), "first");
+    let second = project_dir(tmp.path(), "second");
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "demo"])
+        .arg(&first)
+        .assert()
+        .success();
+
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "demo"])
+        .arg(&second)
+        .assert()
+        .failure()
+        .stderr(contains("the name `demo` is already used"));
+}
+
+#[test]
+fn adding_a_missing_directory_fails_without_creating_a_database() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "demo"])
+        .arg(tmp.path().join("nope"))
+        .assert()
+        .failure()
+        .stderr(contains("nope"));
+
+    assert!(
+        !tmp.path().join("pmanager.db").exists(),
+        "a rejected path must not create the ledger"
+    );
+}
+
+#[test]
+fn adding_without_a_name_or_a_terminal_asks_for_the_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = project_dir(tmp.path(), "demo");
+
+    // assert_cmd gives the child no terminal, like a scheduled run.
+    pman_in(tmp.path())
+        .args(["project", "add"])
+        .arg(&dir)
+        .assert()
+        .failure()
+        .stderr(contains("pass --name"));
+}
+
+#[test]
+fn a_blank_name_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = project_dir(tmp.path(), "demo");
+
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "   "])
+        .arg(&dir)
+        .assert()
+        .failure()
+        .stderr(contains("must not be empty"));
+}
+
+#[test]
+fn a_removed_project_leaves_list_and_keeps_its_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = project_dir(tmp.path(), "demo");
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "demo"])
+        .arg(&dir)
+        .assert()
+        .success();
+
+    pman_in(tmp.path())
+        .args(["project", "remove"])
+        .arg(&dir)
+        .assert()
+        .success()
+        .stderr(contains("unregistered `demo`"));
+
+    assert_eq!(listed_as_json(tmp.path()), serde_json::json!([]));
+    assert!(
+        dir.join("main.rs").exists(),
+        "unregistering must never delete project files"
+    );
+}
+
+#[test]
+fn a_project_whose_folder_is_gone_can_still_be_removed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = project_dir(tmp.path(), "demo");
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "demo"])
+        .arg(&dir)
+        .assert()
+        .success();
+    let canonical = std::fs::canonicalize(&dir).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    pman_in(tmp.path())
+        .args(["project", "remove"])
+        .arg(&canonical)
+        .assert()
+        .success();
+
+    assert_eq!(listed_as_json(tmp.path()), serde_json::json!([]));
+}
+
+#[test]
+fn removing_an_unregistered_path_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = project_dir(tmp.path(), "demo");
+
+    pman_in(tmp.path())
+        .args(["project", "remove"])
+        .arg(&dir)
+        .assert()
+        .failure()
+        .stderr(contains("no project is registered at"));
 }
 
 #[test]
@@ -310,22 +492,15 @@ fn auto_run_remove_reports_that_it_is_not_implemented() {
         .stderr(contains("`pman auto-run remove` is not implemented yet"));
 }
 
-/// Every command in the spec, with the arguments needed to reach its body,
-/// paired with the exact message its stub must print. Every stub ends in
+/// Every command in the spec that is still a stub, with the arguments needed
+/// to reach its body, paired with the exact message its stub must print. An
+/// implemented command leaves this table for tests of its own. Every stub ends in
 /// "is not implemented yet", so checking only that suffix cannot tell one
 /// command's stub from another's; a command that is renamed, dropped, or
 /// wired to the wrong dispatch arm by accident fails here because the full
 /// `pman <path>` prefix is checked too.
 const SURFACE: &[(&[&str], &str)] = &[
     (&["run"], "`pman run` is not implemented yet"),
-    (
-        &["project", "add", "/tmp/x"],
-        "`pman project add` is not implemented yet",
-    ),
-    (
-        &["project", "remove", "/tmp/x"],
-        "`pman project remove` is not implemented yet",
-    ),
     (
         &["project", "cleanup"],
         "`pman project cleanup` is not implemented yet",
