@@ -1,4 +1,9 @@
 use assert_cmd::Command;
+use chrono::{Duration, Utc};
+use pmanager::database::schema;
+use pmanager::database::sql_lite::SqlLite;
+use pmanager::models::project::{self, Project};
+use pmanager::models::state::ProjectState;
 use predicates::str::contains;
 
 fn pman() -> Command {
@@ -23,7 +28,8 @@ fn help_lists_every_global_flag() {
         .stdout(contains("--verbose"))
         .stdout(contains("--quiet"))
         .stdout(contains("--db"))
-        .stdout(contains("--strip-dir"));
+        .stdout(contains("--strip-dir"))
+        .stdout(contains("--output"));
 }
 
 #[test]
@@ -55,12 +61,86 @@ fn running_with_no_command_fails_and_shows_usage() {
 }
 
 #[test]
-fn list_reports_that_it_is_not_implemented() {
+fn list_on_an_empty_ledger_says_so_on_stderr_and_prints_no_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+
     pman()
-        .arg("list")
+        .args(["list", "--db"])
+        .arg(tmp.path().join("pmanager.db"))
         .assert()
-        .failure()
-        .stderr(contains("`pman list` is not implemented yet"));
+        .success()
+        .stdout(predicates::str::is_empty())
+        .stderr(contains("no projects registered"));
+}
+
+#[test]
+fn list_prints_a_registered_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("pmanager.db");
+    seed(&db_path, "demo", "C:/dev/demo");
+
+    pman()
+        .args(["list", "--db"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .stdout(contains("NAME"))
+        .stdout(contains("demo"))
+        .stdout(contains("C:/dev/demo"))
+        .stdout(contains("registered"));
+}
+
+#[test]
+fn list_as_json_types_the_idle_days_as_a_number() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("pmanager.db");
+    seed(&db_path, "demo", "C:/dev/demo");
+
+    let output = pman()
+        .args(["list", "--output", "json", "--db"])
+        .arg(&db_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parsed: serde_json::Value = serde_json::from_slice(&output).expect("stdout is JSON");
+
+    assert_eq!(parsed[0]["name"], serde_json::json!("demo"));
+    assert_eq!(parsed[0]["path"], serde_json::json!("C:/dev/demo"));
+    assert_eq!(parsed[0]["idle"], serde_json::json!(5));
+}
+
+#[test]
+fn list_as_json_on_an_empty_ledger_is_still_parseable() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    pman()
+        .args(["list", "--output", "json", "--db"])
+        .arg(tmp.path().join("pmanager.db"))
+        .assert()
+        .success()
+        .stdout(contains("[]"));
+}
+
+/// Rows are written through the library rather than the CLI, because
+/// `pman project add` is still a stub.
+fn seed(db_path: &std::path::Path, name: &str, path: &str) {
+    let db = SqlLite::open(db_path).unwrap();
+    schema::apply(&db).unwrap();
+
+    let project = Project {
+        name: name.to_string(),
+        path: path.into(),
+        kind: "rust".to_string(),
+        state: ProjectState::Registered,
+        has_git_repo: true,
+        last_change_at: Utc::now() - Duration::days(5),
+        registered_at: Utc::now() - Duration::days(30),
+    };
+
+    db.execute(&project::insert(&project).unwrap()).unwrap();
 }
 
 #[test]
@@ -69,7 +149,7 @@ fn a_failing_stub_writes_nothing_to_stdout() {
     // that command output on stdout stays pipeable even when a command
     // fails.
     pman()
-        .arg("list")
+        .arg("reload")
         .assert()
         .failure()
         .stdout(predicates::str::is_empty());
@@ -83,11 +163,11 @@ fn an_unrelated_rust_log_directive_does_not_silence_errors() {
     // `tracing::error!` from pManager itself, leaving a bare `exit 1` with
     // no output at all. The filter must always carry an ERROR default.
     pman()
-        .arg("list")
+        .arg("reload")
         .env("RUST_LOG", "git2=debug")
         .assert()
         .failure()
-        .stderr(contains("`pman list` is not implemented yet"));
+        .stderr(contains("`pman reload` is not implemented yet"));
 }
 
 #[test]
@@ -104,7 +184,7 @@ fn a_stub_does_not_create_a_database() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("pmanager.db");
 
-    pman().arg("--db").arg(&db).arg("list").assert().failure();
+    pman().arg("--db").arg(&db).arg("reload").assert().failure();
 
     assert!(!db.exists(), "a stub must not create the database");
 }
@@ -259,7 +339,6 @@ fn auto_run_remove_reports_that_it_is_not_implemented() {
 /// wired to the wrong dispatch arm by accident fails here because the full
 /// `pman <path>` prefix is checked too.
 const SURFACE: &[(&[&str], &str)] = &[
-    (&["list"], "`pman list` is not implemented yet"),
     (&["run"], "`pman run` is not implemented yet"),
     (
         &["restore", "a-name"],
@@ -309,6 +388,7 @@ fn help_renders_at_every_level_of_the_tree() {
         vec!["auto-run", "add", "--help"],
         vec!["run", "--help"],
         vec!["restore", "--help"],
+        vec!["list", "--help"],
     ] {
         pman().args(&args).assert().success();
     }
