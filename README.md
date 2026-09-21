@@ -12,8 +12,6 @@ The project is written in rust and a cli project, it has
 - pman run --dry-run - checks all the project if the are ready for achiving or stipping without executing it
 - pman auto-run add - Adds a auto run to the pc
 - pman auto-run remove - Removes a auto run to the pc
-- pman restore <name> - Restore a project => Unzips a .pmanager
-- pman reload - Reloads the stripping projects
 
 ---
 
