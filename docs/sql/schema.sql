@@ -3,7 +3,7 @@
 -- This file is the schema. `src/database/schema.rs` embeds it with
 -- include_str! and applies it on every database open, so there is no second
 -- copy to keep in sync. `PRAGMA user_version` is set separately by that
--- module; it is 1 for the shape below.
+-- module; it is 2 for the shape below.
 --
 -- Every statement here is replayed on every open, so every statement must be
 -- idempotent: IF NOT EXISTS on creates, and no bare ALTER TABLE. A change
@@ -21,14 +21,9 @@ CREATE TABLE IF NOT EXISTS projects (
     -- trailing separator.
     path           TEXT    NOT NULL UNIQUE,
 
-    -- The strip profile's `language`, detected at registration. Deliberately
-    -- unconstrained: profiles are user-supplied JSON under `strip/`, so a
-    -- CHECK here would turn "drop in a new profile" into "migrate the
-    -- database".
-    kind           TEXT    NOT NULL,
-
-    -- registered -> stripped -> archived. A closed set this crate owns,
-    -- unlike `kind`, so it is checked.
+    -- registered -> stripped -> archived. A closed set this crate owns, so it
+    -- is checked. There is no project kind column: which strip profile
+    -- applies is decided by `pman run` on each pass, not at registration.
     state          TEXT    NOT NULL CHECK (state IN ('registered', 'stripped', 'archived')),
 
     -- Whether the folder is a git repository, checked once at registration.

@@ -1,6 +1,6 @@
 # Pmanager
 Its a Project manager which oversees all my local project. I need it due to limited storage on my PC.
-When I register a Project it should check if the Project has a git repo. And it should select what type of project it is (python, C(++, #), Java/Kotlin/Android, javascript/typescript). Then after 60 days, without a change, it should strip the packages like the Node Modules. After 120 Days it should archive the folder to a 7ziped .pproject. When the project has uncommited stuff it should get hold back, and only get archive after 160 Days from the last edit.
+When I register a Project it should check if the Project has a git repo. What type of project it is (python, C(++, #), Java/Kotlin/Android, javascript/typescript) is decided by the stripping profiles when it gets stripped, not at registration. Then after 60 days, without a change, it should strip the packages like the Node Modules. After 120 Days it should archive the folder to a 7ziped .pproject. When the project has uncommited stuff it should get hold back, and only get archive after 160 Days from the last edit.
 The data is holded in a sqllite database. It contain per row a Project with the state. the Path and if acrived a path to the archived file.
 The project is written in rust and a cli project, it has
 - pmanager or pman - prefix

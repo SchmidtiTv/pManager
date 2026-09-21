@@ -29,7 +29,7 @@ impl Command for List {
     }
 }
 
-const HEADERS: [&str; 5] = ["NAME", "KIND", "STATE", "IDLE", "PATH"];
+const HEADERS: [&str; 4] = ["NAME", "STATE", "IDLE", "PATH"];
 
 fn console_data(projects: &[Project], now: DateTime<Utc>) -> ConsoleData {
     ConsoleData {
@@ -41,7 +41,6 @@ fn console_data(projects: &[Project], now: DateTime<Utc>) -> ConsoleData {
 fn row(project: &Project, now: DateTime<Utc>) -> Vec<Cell> {
     vec![
         Cell::Text(project.name.clone()),
-        Cell::Text(project.kind.clone()),
         Cell::Text(project.state.name().to_string()),
         Cell::Days((now - project.last_change_at).num_days()),
         Cell::Text(project.path.display().to_string()),
@@ -63,7 +62,6 @@ mod tests {
         Project {
             name: name.to_string(),
             path: PathBuf::from(path),
-            kind: "rust".to_string(),
             state,
             has_git_repo: true,
             last_change_at: Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap(),
@@ -76,7 +74,7 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 6, 11, 0, 0, 0).unwrap();
         let data = console_data(&[project("a", "C:/a", ProjectState::Registered)], now);
 
-        assert_eq!(data.rows[0][3], Cell::Days(10));
+        assert_eq!(data.rows[0][2], Cell::Days(10));
     }
 
     #[test]
