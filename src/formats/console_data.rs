@@ -6,7 +6,7 @@ use anyhow::ensure;
 use clap::ValueEnum;
 
 use crate::error::Result;
-use crate::formattes::{json, table};
+use crate::formats::{json, table};
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewType {

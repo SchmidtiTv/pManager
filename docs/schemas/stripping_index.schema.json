@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stripping_index.schema.json",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "language": {
+        "type": "string",
+        "minLength": 1
+      },
+      "file": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "language",
+      "file"
+    ],
+    "additionalProperties": false
+  }
+}

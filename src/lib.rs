@@ -5,10 +5,11 @@ pub mod commands;
 pub mod context;
 pub mod database;
 pub mod error;
-pub mod formattes;
+pub mod formats;
 pub mod models;
 pub mod paths;
 pub mod scheduler;
+pub mod stripping;
 
 use std::process::ExitCode;
 

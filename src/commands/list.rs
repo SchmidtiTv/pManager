@@ -4,7 +4,7 @@ use clap::Args;
 use super::Command;
 use crate::context::Cx;
 use crate::error::Result;
-use crate::formattes::console_data::{Cell, ConsoleData, build_output};
+use crate::formats::console_data::{Cell, ConsoleData, build_output};
 use crate::models::project::{self, Project};
 
 #[derive(Args, Debug)]
@@ -55,7 +55,7 @@ mod tests {
     use chrono::{TimeZone as _, Utc};
 
     use super::console_data;
-    use crate::formattes::console_data::Cell;
+    use crate::formats::console_data::Cell;
     use crate::models::project::Project;
     use crate::models::state::ProjectState;
 

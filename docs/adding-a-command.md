@@ -30,14 +30,9 @@ impl Command for Vacuum {
 }
 ```
 
-`cx.db()` takes `&mut self` and hands back a borrow tied to that
-`&mut`, which then blocks any further access to `cx` (including
-`cx.paths`) for as long as the borrow lives — you'll hit E0502 the moment
-you try to read anything else off `cx` after calling it. Read what you
-need from `cx.paths` before calling `cx.db()`, or clone the values you
-need out of `Paths` first. This is a known rough edge in `Cx`'s ergonomics
-and is being revisited in a later spec, not something to work around with
-cleverness here.
+`cx.db()` takes `&self` and hands back `&SqlLite` out of a `OnceCell`, so
+reading `cx.paths` or `cx.view` afterwards is fine — `src/commands/list.rs`
+queries the database and then uses `cx.view` in the next statement.
 
 Note the trait import: a top-level file like this one sits directly inside
 `src/commands/`, so `super` is `crate::commands` and `use super::Command;`
