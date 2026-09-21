@@ -149,7 +149,7 @@ fn a_failing_stub_writes_nothing_to_stdout() {
     // that command output on stdout stays pipeable even when a command
     // fails.
     pman()
-        .arg("reload")
+        .args(["project", "cleanup"])
         .assert()
         .failure()
         .stdout(predicates::str::is_empty());
@@ -163,20 +163,11 @@ fn an_unrelated_rust_log_directive_does_not_silence_errors() {
     // `tracing::error!` from pManager itself, leaving a bare `exit 1` with
     // no output at all. The filter must always carry an ERROR default.
     pman()
-        .arg("reload")
+        .args(["project", "cleanup"])
         .env("RUST_LOG", "git2=debug")
         .assert()
         .failure()
-        .stderr(contains("`pman reload` is not implemented yet"));
-}
-
-#[test]
-fn reload_reports_that_it_is_not_implemented() {
-    pman()
-        .arg("reload")
-        .assert()
-        .failure()
-        .stderr(contains("`pman reload` is not implemented yet"));
+        .stderr(contains("`pman project cleanup` is not implemented yet"));
 }
 
 #[test]
@@ -184,7 +175,12 @@ fn a_stub_does_not_create_a_database() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("pmanager.db");
 
-    pman().arg("--db").arg(&db).arg("reload").assert().failure();
+    pman()
+        .arg("--db")
+        .arg(&db)
+        .args(["project", "cleanup"])
+        .assert()
+        .failure();
 
     assert!(!db.exists(), "a stub must not create the database");
 }
@@ -205,24 +201,6 @@ fn run_accepts_dry_run() {
         .assert()
         .failure()
         .stderr(contains("`pman run` is not implemented yet"));
-}
-
-#[test]
-fn restore_requires_a_name() {
-    pman()
-        .arg("restore")
-        .assert()
-        .failure()
-        .stderr(contains("NAME"));
-}
-
-#[test]
-fn restore_reports_that_it_is_not_implemented() {
-    pman()
-        .args(["restore", "my-project"])
-        .assert()
-        .failure()
-        .stderr(contains("`pman restore` is not implemented yet"));
 }
 
 #[test]
@@ -341,11 +319,6 @@ fn auto_run_remove_reports_that_it_is_not_implemented() {
 const SURFACE: &[(&[&str], &str)] = &[
     (&["run"], "`pman run` is not implemented yet"),
     (
-        &["restore", "a-name"],
-        "`pman restore` is not implemented yet",
-    ),
-    (&["reload"], "`pman reload` is not implemented yet"),
-    (
         &["project", "add", "/tmp/x"],
         "`pman project add` is not implemented yet",
     ),
@@ -387,7 +360,6 @@ fn help_renders_at_every_level_of_the_tree() {
         vec!["auto-run", "--help"],
         vec!["auto-run", "add", "--help"],
         vec!["run", "--help"],
-        vec!["restore", "--help"],
         vec!["list", "--help"],
     ] {
         pman().args(&args).assert().success();
