@@ -1,6 +1,6 @@
 //! Renders console data as space-padded, aligned columns.
 
-use crate::formattes::console_data::{Cell, ConsoleData};
+use crate::formats::console_data::{Cell, ConsoleData};
 
 // Headers alone carry no information, so an empty table renders to nothing at
 // all rather than to a lone header line.
@@ -57,7 +57,7 @@ fn format_row(row: &[String], widths: &[usize]) -> String {
 #[cfg(test)]
 mod tests {
     use super::render;
-    use crate::formattes::console_data::{Cell, ConsoleData};
+    use crate::formats::console_data::{Cell, ConsoleData};
 
     fn data(rows: Vec<Vec<&str>>) -> ConsoleData {
         ConsoleData {

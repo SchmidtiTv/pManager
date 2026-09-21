@@ -19,6 +19,9 @@ dirs = "7.0.0"
 git2 = { version = "0.21.0", default-features = false }
 ignore = "0.4.33"
 indicatif = "0.18.6"
+# No default features: drops the reqwest/TLS remote-reference resolver.
+# The profile schemas are compiled in, so nothing is fetched at runtime.
+jsonschema = { version = "0.56.0", default-features = false }
 owo-colors = "4.4.0"
 rusqlite = { version = "0.40.2", features = ["bundled", "chrono"] }
 serde = { version = "1.0.229", features = ["derive"] }

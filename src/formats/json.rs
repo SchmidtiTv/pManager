@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use serde_json::{Map, Value};
 
 use crate::error::Result;
-use crate::formattes::console_data::{Cell, ConsoleData};
+use crate::formats::console_data::{Cell, ConsoleData};
 
 pub fn render(data: &ConsoleData) -> Result<String> {
     let rows: Vec<Value> = data
@@ -44,7 +44,7 @@ fn value(cell: &Cell) -> Value {
 #[cfg(test)]
 mod tests {
     use super::render;
-    use crate::formattes::console_data::{Cell, ConsoleData};
+    use crate::formats::console_data::{Cell, ConsoleData};
 
     #[test]
     fn each_row_becomes_an_object_keyed_by_its_header() {

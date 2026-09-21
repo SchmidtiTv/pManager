@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use crate::database::schema;
 use crate::database::sql_lite::SqlLite;
 use crate::error::Result;
-use crate::formattes::console_data::ViewType;
+use crate::formats::console_data::ViewType;
 use crate::paths::Paths;
 
 pub struct Cx {
@@ -40,7 +40,7 @@ mod tests {
 
     use super::Cx;
     use crate::database::sql_builder::SqlBuilder;
-    use crate::formattes::console_data::ViewType;
+    use crate::formats::console_data::ViewType;
     use crate::paths::Paths;
     use std::path::Path;
 

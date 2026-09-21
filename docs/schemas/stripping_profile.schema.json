@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "stripping_profile.schema.json",
+  "type": "object",
+  "properties": {
+    "language": {
+      "type": "string",
+      "minLength": 1
+    },
+    "detection": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/element"
+      }
+    },
+    "strippable": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/element"
+      }
+    }
+  },
+  "required": [
+    "language",
+    "detection",
+    "strippable"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "element": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "file",
+            "folder"
+          ]
+        },
+        "element": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "element"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -6,7 +6,7 @@ use clap::{ArgAction, Args, Parser};
 use tracing_subscriber::EnvFilter;
 
 use crate::commands::Commands;
-use crate::formattes::console_data::ViewType;
+use crate::formats::console_data::ViewType;
 
 #[derive(Parser, Debug)]
 // Without bin_name clap takes the usage line from argv[0], which is

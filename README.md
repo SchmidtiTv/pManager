@@ -49,7 +49,7 @@ A profile should look like this:
 			"element": ".venv"
 		}
 	],
-	"stipable": [
+	"strippable": [
 		{
 			"type": "folder",
 			"element": ".venv"
