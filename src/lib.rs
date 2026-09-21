@@ -32,7 +32,7 @@ fn try_run() -> error::Result {
     cli::init_tracing(cli.global.verbose, cli.global.quiet);
 
     let paths = paths::Paths::resolve(cli.global.db.clone(), cli.global.strip_dir.clone())?;
-    let mut cx = context::Cx::new(paths);
+    let mut cx = context::Cx::new(paths, cli.global.output);
 
     cli.command.run(&mut cx)
 }
