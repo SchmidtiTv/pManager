@@ -5,6 +5,7 @@ pub mod commands;
 pub mod context;
 pub mod database;
 pub mod error;
+pub mod models;
 pub mod paths;
 pub mod scheduler;
 
