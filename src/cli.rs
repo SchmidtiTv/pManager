@@ -6,10 +6,14 @@ use clap::{ArgAction, Args, Parser};
 use tracing_subscriber::EnvFilter;
 
 use crate::commands::Commands;
+use crate::formattes::console_data::ViewType;
 
 #[derive(Parser, Debug)]
+// Without bin_name clap takes the usage line from argv[0], which is
+// `pman.exe` on Windows and `pman` everywhere else.
 #[command(
     name = "pman",
+    bin_name = "pman",
     version,
     about = "Ages out dormant local projects to reclaim disk space",
     propagate_version = true
@@ -39,28 +43,12 @@ pub struct GlobalArgs {
     /// Override the strip-profile directory
     #[arg(long, global = true, value_name = "PATH", env = "PMANAGER_STRIP_DIR")]
     pub strip_dir: Option<PathBuf>,
+
+    /// Render command data as an aligned table or as JSON
+    #[arg(short, long, global = true, value_enum, default_value_t = ViewType::Table)]
+    pub output: ViewType,
 }
 
-/// Install the log subscriber. `RUST_LOG` wins over the flags when set.
-///
-/// Writes to stderr so that command output on stdout stays pipeable, and uses
-/// `try_init` so repeated calls inside one test process are harmless.
-///
-/// The filter always carries a global `error` floor, so that a `RUST_LOG`
-/// which scopes down some unrelated dependency (e.g. `RUST_LOG=git2=debug`)
-/// can never silence pManager's own error reporting -- that reporting is the
-/// CLI's only channel for telling the user why it failed.
-///
-/// Note this floor cannot be provided by `EnvFilter::builder`'s
-/// `with_default_directive`: that default is only applied when the parsed
-/// directive string is *entirely* empty. `RUST_LOG=git2=debug` parses to one
-/// non-empty (but narrowly scoped) directive, so the default is skipped and
-/// every other target -- including pManager's own -- is left with no
-/// matching directive at all, which `EnvFilter` treats as disabled. Instead,
-/// an explicit `error` directive is always prepended to whatever `RUST_LOG`
-/// contains; a later, more permissive directive for the same (global) target
-/// still wins, because `EnvFilter` keeps only the most recently added
-/// directive per target.
 pub fn init_tracing(verbose: u8, quiet: bool) {
     let fallback = if quiet {
         "error"
@@ -93,8 +81,6 @@ mod tests {
     use super::Cli;
     use clap::CommandFactory;
 
-    /// clap's own validator for malformed derive setups: conflicting argument
-    /// names, duplicate shorts, bad defaults. Rerun as every command is added.
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
