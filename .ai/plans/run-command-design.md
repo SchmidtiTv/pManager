@@ -1,6 +1,7 @@
 # Design — `pman run`
 
-Status: approved design, not yet implemented.
+Status: implemented (2026-09-22). Kept as the record of why the pass is
+shaped this way; `.ai/context/codemap.md` describes what is now in the tree.
 
 `pman run` is the pass that does the work the rest of the tool exists to support: it
 looks at every registered project, decides whether it has gone cold enough to strip or

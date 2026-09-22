@@ -1,4 +1,6 @@
+pub mod detection;
 pub mod parsing;
+pub mod removal;
 pub mod validation;
 
 use std::path::Path;

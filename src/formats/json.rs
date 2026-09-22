@@ -38,6 +38,9 @@ fn value(cell: &Cell) -> Value {
         Cell::Bool(flag) => Value::Bool(*flag),
         // The "d" is a table suffix; JSON keeps the day count comparable.
         Cell::Days(days) => Value::Number((*days).into()),
+        // Likewise the unit: only the table renderer applies it, so a
+        // machine reading this gets a byte count it can add up.
+        Cell::Bytes(bytes) => Value::Number((*bytes).into()),
     }
 }
 
@@ -69,6 +72,18 @@ mod tests {
         assert_eq!(parsed[0]["idle"], serde_json::json!(10));
         assert_eq!(parsed[0]["size_kb"], serde_json::json!(4096));
         assert_eq!(parsed[0]["git"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn a_size_stays_a_raw_byte_count_so_it_can_be_summed() {
+        let data = ConsoleData {
+            headers: vec!["FREED".to_string()],
+            rows: vec![vec![Cell::Bytes(1536)]],
+        };
+
+        let parsed: serde_json::Value = serde_json::from_str(&render(&data).unwrap()).unwrap();
+
+        assert_eq!(parsed[0]["freed"], serde_json::json!(1536));
     }
 
     #[test]

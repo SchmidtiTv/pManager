@@ -1,8 +1,10 @@
+use std::path::{Path, PathBuf};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectState {
     Registered,
     Stripped,
-    Archived { archive_path: String },
+    Archived { archive_path: PathBuf },
 }
 
 impl ProjectState {
@@ -14,7 +16,7 @@ impl ProjectState {
         }
     }
 
-    pub fn archive_path(&self) -> Option<&str> {
+    pub fn archive_path(&self) -> Option<&Path> {
         match self {
             Self::Registered | Self::Stripped => None,
             Self::Archived { archive_path } => Some(archive_path),

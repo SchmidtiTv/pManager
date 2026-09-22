@@ -10,6 +10,7 @@ use crate::activity;
 use crate::commands::Command;
 use crate::context::Cx;
 use crate::error::Result;
+use crate::git;
 use crate::models::project::{self, Project};
 use crate::models::state::ProjectState;
 use crate::paths;
@@ -53,7 +54,7 @@ impl Command for Add {
         }
 
         let project = Project {
-            has_git_repo: has_git_repo(&path),
+            has_git_repo: git::has_repo(&path),
             last_change_at: activity::last_change(&path)?,
             registered_at: Utc::now(),
             state: ProjectState::Registered,
@@ -96,14 +97,4 @@ fn prompt_for_name(path: &Path) -> Result<String> {
         .context("could not read the project name")?;
 
     checked_name(&name)
-}
-
-fn has_git_repo(path: &Path) -> bool {
-    match git2::Repository::open(path) {
-        Ok(_) => true,
-        Err(err) => {
-            tracing::debug!("{} is not a git repository: {err}", path.display());
-            false
-        }
-    }
 }
