@@ -27,8 +27,6 @@ pub struct Add {
 
 impl Command for Add {
     fn run(&self, cx: &mut Cx) -> Result<()> {
-        // Everything that can fail without the ledger runs first, so a typo
-        // in the path never creates a database.
         let path = paths::normalise_project_path(&self.path)?;
         let name = match &self.name {
             Some(name) => checked_name(name)?,
@@ -82,8 +80,6 @@ fn checked_name(name: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
-/// Scheduled and scripted use has no one to answer, so without a terminal
-/// this fails instead of blocking.
 fn prompt_for_name(path: &Path) -> Result<String> {
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         bail!("no terminal to ask for a project name; pass --name");
@@ -102,8 +98,6 @@ fn prompt_for_name(path: &Path) -> Result<String> {
     checked_name(&name)
 }
 
-/// Only the folder itself counts: a project nested inside someone else's
-/// repository is not a repository of its own.
 fn has_git_repo(path: &Path) -> bool {
     match git2::Repository::open(path) {
         Ok(_) => true,
