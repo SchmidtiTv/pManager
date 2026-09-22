@@ -35,8 +35,9 @@ impl Command for Remove {
 
         if let Some(archive_path) = project.state.archive_path() {
             tracing::warn!(
-                "`{}` was archived; its archive {archive_path} is left in place",
-                project.name
+                "`{}` was archived; its archive {} is left in place",
+                project.name,
+                archive_path.display()
             );
         }
         tracing::info!(

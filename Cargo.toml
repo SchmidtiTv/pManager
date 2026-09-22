@@ -36,5 +36,8 @@ walkdir = "2.5.0"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+# The run tests need a real repository with uncommitted work in it; the
+# crate already depends on git2, so this pulls in nothing new.
+git2 = { version = "0.21.0", default-features = false }
 predicates = "3.1.4"
 tempfile = "3.27.0"

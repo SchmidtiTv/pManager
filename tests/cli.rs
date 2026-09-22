@@ -187,24 +187,6 @@ fn a_stub_does_not_create_a_database() {
 }
 
 #[test]
-fn run_reports_that_it_is_not_implemented() {
-    pman()
-        .arg("run")
-        .assert()
-        .failure()
-        .stderr(contains("`pman run` is not implemented yet"));
-}
-
-#[test]
-fn run_accepts_dry_run() {
-    pman()
-        .args(["run", "--dry-run"])
-        .assert()
-        .failure()
-        .stderr(contains("`pman run` is not implemented yet"));
-}
-
-#[test]
 fn project_group_help_lists_its_subcommands() {
     pman()
         .args(["project", "--help"])
@@ -454,6 +436,379 @@ fn project_cleanup_reports_that_it_is_not_implemented() {
         .stderr(contains("`pman project cleanup` is not implemented yet"));
 }
 
+// ---------------------------------------------------------------------------
+// `pman run`
+// ---------------------------------------------------------------------------
+
+/// A strip directory holding one profile: a Python project is recognised by
+/// its `pyproject.toml` and gives up its `.venv`.
+fn strip_dir(tmp: &Path) -> PathBuf {
+    let dir = tmp.join("strip");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(
+        dir.join("profiles.json"),
+        r#"[{ "language": "python", "file": "python.profile.json" }]"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("python.profile.json"),
+        r#"{
+            "language": "python",
+            "detection": [{ "type": "file", "element": "pyproject.toml" }],
+            "strippable": [{ "type": "folder", "element": ".venv" }]
+        }"#,
+    )
+    .unwrap();
+    dir
+}
+
+fn pman_run(tmp: &Path) -> Command {
+    let mut command = pman_in(tmp);
+    command.arg("--strip-dir").arg(tmp.join("strip"));
+    command.arg("run");
+    command
+}
+
+/// A Python project with something to strip, registered under `name`.
+fn python_project(tmp: &Path, name: &str) -> PathBuf {
+    let dir = tmp.join(name);
+    std::fs::create_dir_all(dir.join(".venv").join("lib")).unwrap();
+    std::fs::write(dir.join(".venv").join("lib").join("big"), vec![0u8; 4096]).unwrap();
+    std::fs::write(dir.join("pyproject.toml"), "[project]").unwrap();
+    std::fs::write(dir.join("main.py"), "print()").unwrap();
+
+    pman_in(tmp)
+        .args(["project", "add", "--name", name])
+        .arg(&dir)
+        .assert()
+        .success();
+
+    dir
+}
+
+/// Back-date every file in the tree, which is what `activity::last_change`
+/// reads. Directory mtimes are not consulted, so they are left alone.
+fn age(root: &Path, days: u64) {
+    let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60);
+    back_date(root, when);
+}
+
+fn back_date(dir: &Path, when: std::time::SystemTime) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        // `.git` is skipped by the real activity check too, and git writes
+        // its object files read-only, so they cannot be back-dated anyway.
+        if path.file_name() == Some(std::ffi::OsStr::new(".git")) {
+            continue;
+        }
+        if path.is_dir() {
+            back_date(&path, when);
+        } else {
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        }
+    }
+}
+
+fn state_of(tmp: &Path, name: &str) -> String {
+    let listed = listed_as_json(tmp);
+    let row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == serde_json::json!(name))
+        .unwrap_or_else(|| panic!("`{name}` should still be in the ledger"));
+
+    row["state"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn a_dry_run_prints_the_plan_and_changes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 70);
+
+    pman_run(tmp.path())
+        .arg("--dry-run")
+        .assert()
+        .success()
+        .stdout(contains("demo"))
+        .stdout(contains("strip"))
+        .stdout(contains("dry-run"));
+
+    assert!(
+        dir.join(".venv").exists(),
+        "--dry-run must not delete anything"
+    );
+    assert_eq!(
+        state_of(tmp.path(), "demo"),
+        "registered",
+        "--dry-run must not move the ledger row"
+    );
+}
+
+#[test]
+fn a_cold_project_with_a_matching_profile_is_stripped() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 70);
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("strip"))
+        .stdout(contains("ok"));
+
+    assert!(!dir.join(".venv").exists(), "the .venv should be gone");
+    assert!(
+        dir.join("main.py").exists(),
+        "only the profile's strippable entries may be removed"
+    );
+    assert_eq!(state_of(tmp.path(), "demo"), "stripped");
+}
+
+#[test]
+fn a_project_still_in_use_is_left_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("none"))
+        .stdout(contains("active"));
+
+    assert!(dir.join(".venv").exists());
+    assert_eq!(state_of(tmp.path(), "demo"), "registered");
+}
+
+#[test]
+fn a_cold_project_no_profile_recognises_says_so_rather_than_looking_idle() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = tmp.path().join("mystery");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("notes.txt"), "no marker here").unwrap();
+    pman_in(tmp.path())
+        .args(["project", "add", "--name", "mystery"])
+        .arg(&dir)
+        .assert()
+        .success();
+    age(&dir, 70);
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("no profile"));
+
+    assert_eq!(state_of(tmp.path(), "mystery"), "registered");
+}
+
+#[test]
+fn a_dirty_repository_is_held_back_until_a_hundred_and_sixty_days() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+
+    let repository = git2::Repository::init(&dir).unwrap();
+    std::fs::write(dir.join(".gitignore"), ".venv/\n").unwrap();
+    let mut index = repository.index().unwrap();
+    index
+        .add_all(["*"], git2::IndexAddOption::DEFAULT, None)
+        .unwrap();
+    index.write().unwrap();
+    let tree = repository.find_tree(index.write_tree().unwrap()).unwrap();
+    let who = git2::Signature::now("test", "test@example.com").unwrap();
+    repository
+        .commit(Some("HEAD"), &who, &who, "seed", &tree, &[])
+        .unwrap();
+    // Uncommitted work: this is what defers the archive.
+    std::fs::write(dir.join("notes.md"), "half-finished").unwrap();
+
+    age(&dir, 130);
+    pman_run(tmp.path()).assert().success();
+
+    assert!(
+        dir.exists() && !tmp.path().join("demo.pproject").exists(),
+        "130 days with uncommitted work is short of the 160-day threshold"
+    );
+
+    age(&dir, 170);
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("archive"));
+
+    assert!(!dir.exists(), "past 160 days the folder is packed away");
+    assert!(tmp.path().join("demo.pproject").is_file());
+    assert_eq!(state_of(tmp.path(), "demo"), "archived");
+}
+
+#[test]
+fn an_archived_project_is_not_touched_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 200);
+
+    pman_run(tmp.path()).assert().success();
+    let archive = tmp.path().join("demo.pproject");
+    let packed = std::fs::read(&archive).unwrap();
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("already archived"));
+
+    assert_eq!(
+        std::fs::read(&archive).unwrap(),
+        packed,
+        "a second pass must not repack an archived project"
+    );
+}
+
+#[test]
+fn a_registered_project_past_both_thresholds_is_stripped_before_it_is_packed() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 200);
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("strip+archive"));
+
+    let archive = tmp.path().join("demo.pproject");
+    assert!(archive.is_file());
+    assert!(
+        std::fs::metadata(&archive).unwrap().len() < 4096,
+        "the 4 KiB .venv must be stripped before packing, not compressed into the archive"
+    );
+}
+
+#[test]
+fn a_project_whose_folder_is_gone_is_reported_not_repaired() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("missing"));
+
+    assert_eq!(
+        state_of(tmp.path(), "demo"),
+        "registered",
+        "the dead row is `pman project cleanup`'s to remove, not run's"
+    );
+}
+
+#[test]
+fn run_on_an_empty_ledger_succeeds_and_prints_no_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty())
+        .stderr(contains("no projects registered"));
+}
+
+#[test]
+fn an_invalid_profile_fails_the_pass_before_any_project_is_touched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let strip = strip_dir(tmp.path());
+    std::fs::write(
+        strip.join("python.profile.json"),
+        r#"{ "language": "python", "detection": [], "strippable": [] }"#,
+    )
+    .unwrap();
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 200);
+
+    pman_run(tmp.path()).assert().failure();
+
+    assert!(
+        dir.join(".venv").exists(),
+        "a broken profile must stop the pass before anything is deleted"
+    );
+}
+
+#[test]
+fn run_as_json_keeps_the_freed_bytes_as_a_number() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 70);
+
+    let output = pman_run(tmp.path())
+        .args(["--output", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parsed: serde_json::Value = serde_json::from_slice(&output).expect("stdout is JSON");
+
+    assert_eq!(parsed[0]["name"], serde_json::json!("demo"));
+    assert_eq!(parsed[0]["action"], serde_json::json!("strip"));
+    assert_eq!(parsed[0]["result"], serde_json::json!("ok"));
+    assert_eq!(parsed[0]["freed"], serde_json::json!(4096));
+}
+
+/// Unix-only: a read-only parent directory is the portable way to make a
+/// delete fail on demand.
+#[cfg(unix)]
+#[test]
+fn one_project_failing_does_not_stop_the_ones_after_it() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    // `select_all` orders by name, so `a-locked` is attempted first.
+    let locked = python_project(tmp.path(), "a-locked");
+    let healthy = python_project(tmp.path(), "b-healthy");
+    age(&locked, 70);
+    age(&healthy, 70);
+
+    let original = std::fs::metadata(&locked).unwrap().permissions();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let assertion = pman_run(tmp.path()).assert();
+    std::fs::set_permissions(&locked, original).unwrap();
+
+    assertion
+        .failure()
+        // The row shows the action it was attempting, not a reassuring
+        // `none`, so the table is complete without reading stderr.
+        .stdout(contains("strip"))
+        .stdout(contains("failed"))
+        .stderr(contains("a-locked"));
+
+    assert!(
+        locked.join(".venv").exists(),
+        "the locked project's strip must not have half-succeeded"
+    );
+    assert!(
+        !healthy.join(".venv").exists(),
+        "a failure must not block the projects after it"
+    );
+    assert_eq!(state_of(tmp.path(), "a-locked"), "registered");
+    assert_eq!(state_of(tmp.path(), "b-healthy"), "stripped");
+}
+
 #[test]
 fn auto_run_group_is_spelled_with_a_hyphen() {
     pman()
@@ -500,7 +855,6 @@ fn auto_run_remove_reports_that_it_is_not_implemented() {
 /// wired to the wrong dispatch arm by accident fails here because the full
 /// `pman <path>` prefix is checked too.
 const SURFACE: &[(&[&str], &str)] = &[
-    (&["run"], "`pman run` is not implemented yet"),
     (
         &["project", "cleanup"],
         "`pman project cleanup` is not implemented yet",

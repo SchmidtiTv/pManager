@@ -39,12 +39,33 @@ pub fn insert(project: &Project) -> Result<Query> {
             "has_git_repo",
             Value::Integer(i64::from(project.has_git_repo)),
         )
-        .value("archive_path", archive_path_value(project))
+        .value("archive_path", archive_path_value(&project.state)?)
         .value(
             "last_change_at",
             timestamp::to_value(project.last_change_at),
         )
         .value("registered_at", timestamp::to_value(project.registered_at))
+        .build()?;
+
+    Ok(query)
+}
+
+/// Write back the columns a pass can change, matched on the path.
+///
+/// `name`, `path` and `registered_at` are deliberately absent: they identify
+/// the row and are set once, at registration. Everything a pass learns --
+/// the new state, where the archive went, and when the project was last
+/// worked on -- is written in this one statement, so a project either moves
+/// forward completely or not at all.
+pub fn update(project: &Project) -> Result<Query> {
+    let query = SqlBuilder::update("projects")
+        .set("state", Value::Text(project.state.name().to_string()))
+        .set("archive_path", archive_path_value(&project.state)?)
+        .set(
+            "last_change_at",
+            timestamp::to_value(project.last_change_at),
+        )
+        .and_where("path = ?", vec![path_value(&project.path)?])
         .build()?;
 
     Ok(query)
@@ -108,15 +129,15 @@ pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Project> {
 fn path_value(path: &Path) -> Result<Value> {
     let text = path
         .to_str()
-        .with_context(|| format!("project path is not valid UTF-8: {}", path.display()))?;
+        .with_context(|| format!("path is not valid UTF-8: {}", path.display()))?;
 
     Ok(Value::Text(text.to_string()))
 }
 
-fn archive_path_value(project: &Project) -> Value {
-    match project.state.archive_path() {
-        Some(path) => Value::Text(path.to_string()),
-        None => Value::Null,
+fn archive_path_value(state: &ProjectState) -> Result<Value> {
+    match state.archive_path() {
+        Some(path) => path_value(path),
+        None => Ok(Value::Null),
     }
 }
 
@@ -132,7 +153,9 @@ fn state_from(state: &str, archive_path: Option<String>) -> rusqlite::Result<Pro
     match (state, archive_path) {
         ("registered", None) => Ok(ProjectState::Registered),
         ("stripped", None) => Ok(ProjectState::Stripped),
-        ("archived", Some(archive_path)) => Ok(ProjectState::Archived { archive_path }),
+        ("archived", Some(archive_path)) => Ok(ProjectState::Archived {
+            archive_path: PathBuf::from(archive_path),
+        }),
         ("registered" | "stripped", Some(path)) => Err(invalid(format!(
             "state {state:?} must not carry an archive_path, found {path:?}"
         ))),
@@ -153,6 +176,7 @@ mod tests {
 
     use super::{
         COLUMNS, Project, delete_by_path, from_row, insert, select_by_name_or_path, select_by_path,
+        update,
     };
     use crate::database::schema;
     use crate::database::sql_builder::SqlBuilder;
@@ -198,12 +222,71 @@ mod tests {
     fn an_archived_project_round_trips_with_its_archive_path() {
         let db = applied();
         let original = project(ProjectState::Archived {
-            archive_path: "C:/archive/pManager.pproject".to_string(),
+            archive_path: PathBuf::from("C:/archive/pManager.pproject"),
         });
 
         db.execute(&insert(&original).unwrap()).unwrap();
 
-        assert_eq!(read_back(&db), vec![original]);
+        let read = read_back(&db);
+        assert_eq!(read, vec![original]);
+        assert_eq!(
+            read[0].state.archive_path(),
+            Some(Path::new("C:/archive/pManager.pproject")),
+            "the archive path must come back as a path, not a string"
+        );
+    }
+
+    #[test]
+    fn a_pass_can_move_a_project_to_archived_in_one_update() {
+        let db = applied();
+        db.execute(&insert(&project(ProjectState::Registered)).unwrap())
+            .unwrap();
+
+        let archived = Project {
+            state: ProjectState::Archived {
+                archive_path: PathBuf::from("C:/dev/rust/pManager.pproject"),
+            },
+            last_change_at: Utc.with_ymd_and_hms(2026, 9, 1, 12, 0, 0).unwrap(),
+            ..project(ProjectState::Registered)
+        };
+
+        let changed = db.execute(&update(&archived).unwrap()).unwrap();
+
+        assert_eq!(changed, 1, "exactly one row matches the path");
+        assert_eq!(read_back(&db), vec![archived]);
+    }
+
+    #[test]
+    fn stripping_clears_nothing_but_moves_the_state() {
+        let db = applied();
+        db.execute(&insert(&project(ProjectState::Registered)).unwrap())
+            .unwrap();
+
+        let stripped = project(ProjectState::Stripped);
+        db.execute(&update(&stripped).unwrap()).unwrap();
+
+        let read = read_back(&db);
+        assert_eq!(read, vec![stripped]);
+        assert_eq!(
+            read[0].registered_at,
+            Utc.with_ymd_and_hms(2026, 6, 1, 9, 0, 0).unwrap(),
+            "an update must not rewrite when the project was registered"
+        );
+    }
+
+    #[test]
+    fn updating_a_path_that_is_not_registered_changes_nothing() {
+        let db = applied();
+        db.execute(&insert(&project(ProjectState::Registered)).unwrap())
+            .unwrap();
+
+        let elsewhere = Project {
+            path: PathBuf::from("C:/dev/rust/other"),
+            ..project(ProjectState::Stripped)
+        };
+
+        assert_eq!(db.execute(&update(&elsewhere).unwrap()).unwrap(), 0);
+        assert_eq!(read_back(&db), vec![project(ProjectState::Registered)]);
     }
 
     #[test]

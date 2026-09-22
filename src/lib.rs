@@ -1,13 +1,17 @@
 //! pManager — ages out dormant local projects to reclaim disk space.
 
 pub mod activity;
+pub mod archive;
 pub mod cli;
 pub mod commands;
 pub mod context;
 pub mod database;
+pub mod disk;
 pub mod error;
 pub mod formats;
+pub mod git;
 pub mod models;
+pub mod pass;
 pub mod paths;
 pub mod scheduler;
 pub mod stripping;

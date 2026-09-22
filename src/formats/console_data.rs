@@ -20,6 +20,7 @@ pub enum Cell {
     Int(i64),
     Bool(bool),
     Days(i64),
+    Bytes(u64),
 }
 
 impl fmt::Display for Cell {
@@ -29,7 +30,31 @@ impl fmt::Display for Cell {
             Cell::Int(number) => write!(f, "{number}"),
             Cell::Bool(flag) => write!(f, "{flag}"),
             Cell::Days(days) => write!(f, "{days}d"),
+            Cell::Bytes(bytes) => write!(f, "{}", human_size(*bytes)),
         }
+    }
+}
+
+const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+/// Powers of 1024, because the number being reported is disk space and that
+/// is the unit a file manager shows for the same folder.
+///
+/// Whole bytes below the first step: `512 B` is exact where `0.5 KiB` is
+/// both longer and vaguer.
+fn human_size(bytes: u64) -> String {
+    let mut size = bytes as f64;
+    let mut unit = 0;
+
+    while size >= 1024.0 && unit + 1 < UNITS.len() {
+        size /= 1024.0;
+        unit += 1;
+    }
+
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[0])
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
     }
 }
 
@@ -58,6 +83,17 @@ pub fn build_output(data: &ConsoleData, view: ViewType) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{Cell, ConsoleData, ViewType, build_output};
+
+    #[test]
+    fn a_size_carries_a_unit_and_stays_exact_below_the_first_step() {
+        assert_eq!(Cell::Bytes(0).to_string(), "0 B");
+        assert_eq!(Cell::Bytes(512).to_string(), "512 B");
+        assert_eq!(Cell::Bytes(1023).to_string(), "1023 B");
+        assert_eq!(Cell::Bytes(1024).to_string(), "1.0 KiB");
+        assert_eq!(Cell::Bytes(1536).to_string(), "1.5 KiB");
+        assert_eq!(Cell::Bytes(3 * 1024 * 1024).to_string(), "3.0 MiB");
+        assert_eq!(Cell::Bytes(u64::MAX).to_string(), "16777216.0 TiB");
+    }
 
     #[test]
     fn a_row_that_does_not_match_the_headers_is_rejected() {
