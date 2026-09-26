@@ -768,6 +768,74 @@ fn run_as_json_keeps_the_freed_bytes_as_a_number() {
     assert_eq!(parsed[0]["freed"], serde_json::json!(4096));
 }
 
+#[test]
+fn a_pmanagerignore_keeps_a_project_cold_through_a_whole_pass() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 70);
+
+    // Written last, so it is the newest file in the tree by a wide margin:
+    // without the ignore rule this alone would make the project look active.
+    std::fs::create_dir(dir.join("cache")).unwrap();
+    std::fs::write(dir.join("cache").join("today.bin"), "fresh").unwrap();
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("none"))
+        .stdout(contains("active"));
+    assert!(
+        dir.join(".venv").exists(),
+        "a fresh file makes the project active, so nothing is due yet"
+    );
+
+    std::fs::write(dir.join(".pmanagerignore"), "cache/\n").unwrap();
+    // The ignore file itself is a file in the tree, so it has to be old too.
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(70 * 24 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(dir.join(".pmanagerignore"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    pman_run(tmp.path())
+        .assert()
+        .success()
+        .stdout(contains("strip"))
+        .stdout(contains("ok"));
+
+    assert!(
+        !dir.join(".venv").exists(),
+        "with cache/ ignored the project is 70 days idle and due for a strip"
+    );
+    assert!(
+        dir.join("cache").join("today.bin").exists(),
+        ".pmanagerignore decides what counts as activity, never what is removed"
+    );
+}
+
+#[test]
+fn an_unusable_pmanagerignore_fails_that_project_and_names_the_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 70);
+    std::fs::write(dir.join(".pmanagerignore"), "cache/{\n").unwrap();
+
+    pman_run(tmp.path())
+        .assert()
+        .failure()
+        .stdout(contains("failed"))
+        .stderr(contains(".pmanagerignore"));
+
+    assert!(
+        dir.join(".venv").exists(),
+        "a project that could not be measured must not be acted on"
+    );
+}
+
 /// Unix-only: a read-only parent directory is the portable way to make a
 /// delete fail on demand.
 #[cfg(unix)]
