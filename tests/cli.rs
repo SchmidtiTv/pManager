@@ -79,7 +79,7 @@ fn list_on_an_empty_ledger_says_so_on_stderr_and_prints_no_rows() {
 fn list_prints_a_registered_project() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("pmanager.db");
-    seed(&db_path, "demo", "C:/dev/demo");
+    seed(&db_path, "demo", "C:/dev/demo", ProjectState::Registered);
 
     pman()
         .args(["list", "--db"])
@@ -96,7 +96,7 @@ fn list_prints_a_registered_project() {
 fn list_as_json_types_the_idle_days_as_a_number() {
     let tmp = tempfile::tempdir().unwrap();
     let db_path = tmp.path().join("pmanager.db");
-    seed(&db_path, "demo", "C:/dev/demo");
+    seed(&db_path, "demo", "C:/dev/demo", ProjectState::Registered);
 
     let output = pman()
         .args(["list", "--output", "json", "--db"])
@@ -128,14 +128,14 @@ fn list_as_json_on_an_empty_ledger_is_still_parseable() {
 
 /// Rows are written through the library rather than the CLI, because
 /// `pman project add` needs the path to exist and this one is made up.
-fn seed(db_path: &std::path::Path, name: &str, path: &str) {
+fn seed(db_path: &std::path::Path, name: &str, path: impl Into<PathBuf>, state: ProjectState) {
     let db = SqlLite::open(db_path).unwrap();
     schema::apply(&db).unwrap();
 
     let project = Project {
         name: name.to_string(),
         path: path.into(),
-        state: ProjectState::Registered,
+        state,
         has_git_repo: true,
         last_change_at: Utc::now() - Duration::days(5),
         registered_at: Utc::now() - Duration::days(30),
@@ -150,7 +150,7 @@ fn a_failing_stub_writes_nothing_to_stdout() {
     // that command output on stdout stays pipeable even when a command
     // fails.
     pman()
-        .args(["project", "cleanup"])
+        .args(["auto-run", "add"])
         .assert()
         .failure()
         .stdout(predicates::str::is_empty());
@@ -164,11 +164,11 @@ fn an_unrelated_rust_log_directive_does_not_silence_errors() {
     // `tracing::error!` from pManager itself, leaving a bare `exit 1` with
     // no output at all. The filter must always carry an ERROR default.
     pman()
-        .args(["project", "cleanup"])
+        .args(["auto-run", "add"])
         .env("RUST_LOG", "git2=debug")
         .assert()
         .failure()
-        .stderr(contains("`pman project cleanup` is not implemented yet"));
+        .stderr(contains("`pman auto-run add` is not implemented yet"));
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn a_stub_does_not_create_a_database() {
     pman()
         .arg("--db")
         .arg(&db)
-        .args(["project", "cleanup"])
+        .args(["auto-run", "add"])
         .assert()
         .failure();
 
@@ -427,13 +427,187 @@ fn removing_an_unregistered_path_fails() {
         .stderr(contains("no project is registered at"));
 }
 
+// ---------------------------------------------------------------------------
+// `pman project cleanup`
+// ---------------------------------------------------------------------------
+
+fn cleanup_as_json(tmp: &Path) -> serde_json::Value {
+    let output = pman_in(tmp)
+        .args(["project", "cleanup", "--output", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    serde_json::from_slice(&output).expect("stdout is JSON")
+}
+
+fn result_of(report: &serde_json::Value, name: &str) -> String {
+    let row = report
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == serde_json::json!(name))
+        .unwrap_or_else(|| panic!("`{name}` should have a row in the report"));
+
+    row["result"].as_str().unwrap().to_string()
+}
+
+fn names_in_ledger(tmp: &Path) -> Vec<String> {
+    listed_as_json(tmp)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
 #[test]
-fn project_cleanup_reports_that_it_is_not_implemented() {
-    pman()
+fn cleanup_removes_missing_active_rows_and_keeps_everything_else() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("pmanager.db");
+    let kept = project_dir(tmp.path(), "kept");
+    let archive = tmp.path().join("packed.pproject");
+    std::fs::write(&archive, "7z bytes").unwrap();
+
+    seed(
+        &db_path,
+        "gone-registered",
+        tmp.path().join("gone-registered"),
+        ProjectState::Registered,
+    );
+    seed(
+        &db_path,
+        "gone-stripped",
+        tmp.path().join("gone-stripped"),
+        ProjectState::Stripped,
+    );
+    seed(&db_path, "kept", &kept, ProjectState::Registered);
+    // An archived project's folder is gone by design; its row is the only
+    // record of where the archive went.
+    seed(
+        &db_path,
+        "packed",
+        tmp.path().join("packed"),
+        ProjectState::Archived {
+            archive_path: archive.clone(),
+        },
+    );
+
+    let report = cleanup_as_json(tmp.path());
+
+    assert_eq!(result_of(&report, "gone-registered"), "removed");
+    assert_eq!(result_of(&report, "gone-stripped"), "removed");
+    assert_eq!(result_of(&report, "kept"), "kept");
+    assert_eq!(result_of(&report, "packed"), "kept");
+    assert_eq!(names_in_ledger(tmp.path()), vec!["kept", "packed"]);
+    assert!(
+        kept.join("main.rs").exists(),
+        "cleanup must never touch a project's files"
+    );
+    assert_eq!(
+        std::fs::read(&archive).unwrap(),
+        b"7z bytes",
+        "cleanup must never touch an archive"
+    );
+}
+
+#[test]
+fn cleanup_prints_a_table_and_a_summary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("pmanager.db");
+    seed(
+        &db_path,
+        "gone",
+        tmp.path().join("gone"),
+        ProjectState::Registered,
+    );
+
+    pman_in(tmp.path())
         .args(["project", "cleanup"])
         .assert()
+        .success()
+        .stdout(contains("RESULT"))
+        .stdout(contains("gone"))
+        .stdout(contains("removed"))
+        .stderr(contains("removed 1 stale registration"));
+}
+
+#[test]
+fn a_second_cleanup_finds_nothing_left_to_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("pmanager.db");
+    let kept = project_dir(tmp.path(), "kept");
+    seed(
+        &db_path,
+        "gone",
+        tmp.path().join("gone"),
+        ProjectState::Registered,
+    );
+    seed(&db_path, "kept", &kept, ProjectState::Registered);
+
+    cleanup_as_json(tmp.path());
+
+    pman_in(tmp.path())
+        .args(["project", "cleanup", "--output", "json"])
+        .assert()
+        .success()
+        .stderr(contains("no stale registrations"));
+    let again = cleanup_as_json(tmp.path());
+    assert_eq!(again.as_array().unwrap().len(), 1);
+    assert_eq!(result_of(&again, "kept"), "kept");
+}
+
+#[test]
+fn cleanup_on_an_empty_ledger_says_so_and_prints_no_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    pman_in(tmp.path())
+        .args(["project", "cleanup"])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty())
+        .stderr(contains("no projects registered"));
+
+    assert_eq!(cleanup_as_json(tmp.path()), serde_json::json!([]));
+}
+
+/// Unix-only: a parent directory without search permission makes the
+/// existence check fail with something other than "not found".
+#[cfg(unix)]
+#[test]
+fn a_folder_that_cannot_be_checked_is_kept_and_fails_the_command() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("pmanager.db");
+    let locked = tmp.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    let hidden = locked.join("hidden");
+    std::fs::create_dir(&hidden).unwrap();
+    seed(&db_path, "hidden", &hidden, ProjectState::Registered);
+    seed(
+        &db_path,
+        "z-gone",
+        tmp.path().join("z-gone"),
+        ProjectState::Registered,
+    );
+
+    let original = std::fs::metadata(&locked).unwrap().permissions();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let assertion = pman_in(tmp.path()).args(["project", "cleanup"]).assert();
+    std::fs::set_permissions(&locked, original).unwrap();
+
+    assertion
         .failure()
-        .stderr(contains("`pman project cleanup` is not implemented yet"));
+        .stdout(contains("failed"))
+        .stderr(contains("hidden"));
+    assert_eq!(
+        names_in_ledger(tmp.path()),
+        vec!["hidden"],
+        "an unreadable folder is not proof it is gone, but the next row still gets cleaned"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -923,10 +1097,6 @@ fn auto_run_remove_reports_that_it_is_not_implemented() {
 /// wired to the wrong dispatch arm by accident fails here because the full
 /// `pman <path>` prefix is checked too.
 const SURFACE: &[(&[&str], &str)] = &[
-    (
-        &["project", "cleanup"],
-        "`pman project cleanup` is not implemented yet",
-    ),
     (
         &["auto-run", "add"],
         "`pman auto-run add` is not implemented yet",
