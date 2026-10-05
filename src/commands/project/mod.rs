@@ -24,7 +24,7 @@ pub enum ProjectCommand {
     /// Unregister a project
     Remove(remove::Remove),
 
-    /// Drop rows whose path no longer exists
+    /// Drop registered or stripped rows whose folder no longer exists
     Cleanup(cleanup::Cleanup),
 }
 

@@ -111,6 +111,24 @@ pub fn delete_by_path(path: &Path) -> Result<Query> {
     Ok(query)
 }
 
+/// Like [`delete_by_path`], but only while the row is still `registered` or
+/// `stripped`. An archived project's folder is gone by design, and its row is
+/// the only record of where the archive went.
+pub fn delete_active_by_path(path: &Path) -> Result<Query> {
+    let query = SqlBuilder::delete("projects")
+        .and_where("path = ?", vec![path_value(path)?])
+        .and_where_in(
+            "state",
+            [ProjectState::Registered, ProjectState::Stripped]
+                .iter()
+                .map(|state| Value::Text(state.name().to_string()))
+                .collect(),
+        )
+        .build()?;
+
+    Ok(query)
+}
+
 pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Project> {
     let path: String = row.get("path")?;
     let state: String = row.get("state")?;
@@ -175,8 +193,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        COLUMNS, Project, delete_by_path, from_row, insert, select_by_name_or_path, select_by_path,
-        update,
+        COLUMNS, Project, delete_active_by_path, delete_by_path, from_row, insert,
+        select_by_name_or_path, select_by_path, update,
     };
     use crate::database::schema;
     use crate::database::sql_builder::SqlBuilder;
@@ -337,6 +355,32 @@ mod tests {
             .is_empty(),
             "the deleted project must no longer be found by its path"
         );
+    }
+
+    #[test]
+    fn deleting_an_active_row_spares_an_archived_one() {
+        let db = applied();
+        let archived = project(ProjectState::Archived {
+            archive_path: PathBuf::from("C:/dev/rust/pManager.pproject"),
+        });
+        db.execute(&insert(&archived).unwrap()).unwrap();
+
+        let query = delete_active_by_path(Path::new("C:/dev/rust/pManager")).unwrap();
+
+        assert_eq!(db.execute(&query).unwrap(), 0);
+        assert_eq!(read_back(&db), vec![archived]);
+    }
+
+    #[test]
+    fn deleting_an_active_row_removes_a_stripped_one() {
+        let db = applied();
+        db.execute(&insert(&project(ProjectState::Stripped)).unwrap())
+            .unwrap();
+
+        let query = delete_active_by_path(Path::new("C:/dev/rust/pManager")).unwrap();
+
+        assert_eq!(db.execute(&query).unwrap(), 1);
+        assert!(read_back(&db).is_empty());
     }
 
     #[test]
