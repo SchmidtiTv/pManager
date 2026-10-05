@@ -160,12 +160,15 @@ fn seed(db_path: &std::path::Path, name: &str, path: impl Into<PathBuf>, state: 
 }
 
 #[test]
-fn a_failing_stub_writes_nothing_to_stdout() {
+fn a_failing_command_writes_nothing_to_stdout() {
     // Log output -- including the error report -- must go to stderr only, so
     // that command output on stdout stays pipeable even when a command
     // fails.
-    pman()
-        .args(["auto-run", "add"])
+    let tmp = tempfile::tempdir().unwrap();
+
+    pman_in(tmp.path())
+        .args(["project", "remove"])
+        .arg(tmp.path().join("nope"))
         .assert()
         .failure()
         .stdout(predicates::str::is_empty());
@@ -178,27 +181,35 @@ fn an_unrelated_rust_log_directive_does_not_silence_errors() {
     // `git2=debug`) used to replace the whole filter and swallow every
     // `tracing::error!` from pManager itself, leaving a bare `exit 1` with
     // no output at all. The filter must always carry an ERROR default.
-    pman()
-        .args(["auto-run", "add"])
+    let tmp = tempfile::tempdir().unwrap();
+
+    pman_in(tmp.path())
+        .args(["project", "remove"])
+        .arg(tmp.path().join("nope"))
         .env("RUST_LOG", "git2=debug")
         .assert()
         .failure()
-        .stderr(contains("`pman auto-run add` is not implemented yet"));
+        .stderr(contains("no project is registered at"));
 }
 
+/// Only the failure path is exercised end to end: a successful `add` would
+/// install a real job into this machine's scheduler. The backends are tested
+/// against a fake command runner in `src/scheduler/`.
 #[test]
-fn a_stub_does_not_create_a_database() {
+fn auto_run_add_with_unusable_profiles_fails_before_scheduling_anything() {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("pmanager.db");
 
-    pman()
-        .arg("--db")
-        .arg(&db)
+    pman_in(tmp.path())
+        .arg("--strip-dir")
+        .arg(tmp.path().join("nope"))
         .args(["auto-run", "add"])
         .assert()
-        .failure();
+        .failure()
+        .stdout(predicates::str::is_empty())
+        .stderr(contains("nope"));
 
-    assert!(!db.exists(), "a stub must not create the database");
+    assert!(!db.exists(), "scheduling must not create the database");
 }
 
 #[test]
@@ -1234,24 +1245,6 @@ fn auto_run_group_exposes_two_nested_subcommands() {
     }
 }
 
-#[test]
-fn auto_run_add_reports_that_it_is_not_implemented() {
-    pman()
-        .args(["auto-run", "add"])
-        .assert()
-        .failure()
-        .stderr(contains("`pman auto-run add` is not implemented yet"));
-}
-
-#[test]
-fn auto_run_remove_reports_that_it_is_not_implemented() {
-    pman()
-        .args(["auto-run", "remove"])
-        .assert()
-        .failure()
-        .stderr(contains("`pman auto-run remove` is not implemented yet"));
-}
-
 /// Every command in the spec that is still a stub, with the arguments needed
 /// to reach its body, paired with the exact message its stub must print. An
 /// implemented command leaves this table for tests of its own. Every stub ends in
@@ -1259,16 +1252,9 @@ fn auto_run_remove_reports_that_it_is_not_implemented() {
 /// command's stub from another's; a command that is renamed, dropped, or
 /// wired to the wrong dispatch arm by accident fails here because the full
 /// `pman <path>` prefix is checked too.
-const SURFACE: &[(&[&str], &str)] = &[
-    (
-        &["auto-run", "add"],
-        "`pman auto-run add` is not implemented yet",
-    ),
-    (
-        &["auto-run", "remove"],
-        "`pman auto-run remove` is not implemented yet",
-    ),
-];
+///
+/// Empty while every command is implemented; keep it for the next stub.
+const SURFACE: &[(&[&str], &str)] = &[];
 
 #[test]
 fn every_documented_command_is_reachable_and_honest() {
