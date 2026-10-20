@@ -18,8 +18,6 @@ pub mod stripping;
 
 use std::process::ExitCode;
 
-use clap::Parser;
-
 use crate::commands::Command as _;
 
 /// Process entry point. Never returns an error; it reports and converts.
@@ -34,7 +32,7 @@ pub fn run() -> ExitCode {
 }
 
 fn try_run() -> error::Result {
-    let cli = cli::Cli::parse();
+    let cli = cli::parse();
     cli::init_tracing(cli.global.verbose, cli.global.quiet);
 
     let paths = paths::Paths::resolve(cli.global.db.clone(), cli.global.strip_dir.clone())?;

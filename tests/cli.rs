@@ -64,6 +64,18 @@ fn running_with_no_command_fails_and_shows_usage() {
 }
 
 #[test]
+fn both_binary_names_run_and_name_themselves_in_the_usage_line() {
+    for name in ["pman", "pmanager"] {
+        Command::cargo_bin(name)
+            .unwrap_or_else(|err| panic!("binary `{name}` should build: {err}"))
+            .arg("--help")
+            .assert()
+            .success()
+            .stdout(contains(format!("Usage: {name} [OPTIONS]")));
+    }
+}
+
+#[test]
 fn list_on_an_empty_ledger_says_so_on_stderr_and_prints_no_rows() {
     let tmp = tempfile::tempdir().unwrap();
 
