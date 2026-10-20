@@ -1,72 +1,92 @@
-# Pmanager
-Its a Project manager which oversees all my local project. I need it due to limited storage on my PC.
-When I register a Project it should check if the Project has a git repo. What type of project it is (python, C(++, #), Java/Kotlin/Android, javascript/typescript) is decided by the stripping profiles when it gets stripped, not at registration. Then after 60 days, without a change, it should strip the packages like the Node Modules. After 120 Days it should archive the folder to a 7ziped .pproject. When the project has uncommited stuff it should get hold back, and only get archive after 160 Days from the last edit.
-The data is holded in a sqllite database. It contain per row a Project with the state. the Path and if acrived a path to the archived file.
-The project is written in rust and a cli project, it has
-- pmanager or pman - prefix
-- pman list - list all the register projects
-- pman project add <path> - registers a project and ask for a name for the project
-- pman project cleanup - checks every projects a remove nonexisting projects from the database
-- pman project remove <path> - unregisters a project
-- pman run - checks all the project if the are ready for achiving or stipping. and execute it
-- pman run --dry-run - checks all the project if the are ready for achiving or stipping without executing it
-- pman auto-run add - Adds a auto run to the pc
-- pman auto-run remove - Removes a auto run to the pc
+# pManager
 
----
+## Why
 
-When pman run is beeing executed is goes through every folder, goes through a exact workflow:
-- checks if the folder a has a .pmanagerignore
-- .pmanagerignore exist. it ignores the files defind in it in the last change check
+Local projects pile up, and most of their size is not source code but
+re-creatable stuff like `node_modules`, `.venv` or build output. Projects you
+have not touched in months still eat that space, and cleaning them up by hand
+is tedious and easy to forget. pManager does it automatically: dormant
+projects are stripped first, then archived, without losing anything you
+cannot get back.
 
---
-When a project is dirty is should still get archived after the 160 days
+## What it does
 
----
+Ages out dormant local projects to reclaim disk space. Rust CLI, shipped as
+`pmanager` and `pman`, with a local SQLite database holding every registered
+project, its state, path and (once archived) archive path.
 
-When pmanager is installed it checks in his directory for a stip folder with a subfolders
+## Lifecycle
 
+Days are counted since the last change in the project folder.
+
+| Age | Action |
+| --- | --- |
+| 60 days | Strip: delete dependency/build folders defined by the matching strip profile (e.g. `node_modules`, `.venv`) |
+| 120 days | Archive: pack the folder into a 7z `<name>.pproject` next to it and remove the folder |
+| 160 days | Archive projects with uncommitted git changes (held back until then) |
+
+A `.pmanagerignore` in a project lists files that do not count as a change.
+The project type is decided by the strip profiles at strip time, not at
+registration.
+
+## Commands
+
+| Command | Description |
+| --- | --- |
+| `pman list` | List all registered projects |
+| `pman project add <PATH> [--name <NAME>]` | Register a project (name is prompted if omitted) |
+| `pman project remove <PATH>` | Unregister a project; files and archives stay on disk |
+| `pman project cleanup` | Drop entries whose folder no longer exists |
+| `pman run [--dry-run]` | Strip/archive every project that is due |
+| `pman auto-run add` | Install the scheduled background run |
+| `pman auto-run remove` | Remove the scheduled background run |
+| `pman migrate-v1` | Import projects from a pManager v1 database |
+
+Global options: `-v`/`-vv`, `-q`, `--db <PATH>`, `--strip-dir <PATH>`
+(or `PMANAGER_STRIP_DIR`), `-o table|json`.
+
+## Strip profiles
+
+Profiles live in a `strip` folder next to the executable:
+
+```
 pmanager.exe
-strip
-    - profiles.json     - Collection of a the stripping profiles
-    - java.profile.json - A stipping profile
-
----
-
-A profile should look like this:
-```json
-{
-	"language": "python",
-	"detection": [
-		{
-			"type": "file",
-			"element": "pyproject.toml"
-		},
-		{
-			"type": "folder",
-			"element": ".venv"
-		}
-	],
-	"strippable": [
-		{
-			"type": "folder",
-			"element": ".venv"
-		},
-		{
-			"type": "file",
-			"element": "uv.lock"
-		}
-	]
-}
+strip/
+  profiles.json          index of all profiles
+  python.profile.json    one profile per language
 ```
 
-Index file for all profiles:
+`profiles.json`:
 
 ```json
 [
-	{
-		"language": "python",
-		"file": "./python.profile.json"
-	}
+  { "language": "python", "file": "./python.profile.json" }
 ]
 ```
+
+`python.profile.json`:
+
+```json
+{
+  "language": "python",
+  "detection": [
+    { "type": "file", "element": "pyproject.toml" },
+    { "type": "folder", "element": ".venv" }
+  ],
+  "strippable": [
+    { "type": "folder", "element": ".venv" },
+    { "type": "file", "element": "uv.lock" }
+  ]
+}
+```
+
+## Development
+
+```sh
+cargo build --release
+cargo test
+cargo clippy --all-targets
+cargo fmt --check
+```
+
+See `docs/adding-a-command.md` for adding a subcommand.
