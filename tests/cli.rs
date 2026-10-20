@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 use assert_cmd::Command;
 use chrono::{Duration, Utc};
 use pmanager::database::schema;
+use pmanager::database::sql_builder::Query;
 use pmanager::database::sql_lite::SqlLite;
 use pmanager::models::project::{self, Project};
 use pmanager::models::state::ProjectState;
 use pmanager::paths;
 use predicates::str::contains;
+use rusqlite::types::Value;
 
 fn pman() -> Command {
     Command::cargo_bin("pman").expect("binary `pman` should build")
@@ -1064,6 +1066,154 @@ fn one_project_failing_does_not_stop_the_ones_after_it() {
     assert_eq!(state_of(tmp.path(), "b-healthy"), "stripped");
 }
 
+/// The last pManager v1 schema, as `src/db.rs` on `main` leaves it.
+const V1_SCHEMA: &str = "
+    CREATE TABLE projects (
+        id            INTEGER PRIMARY KEY,
+        path          TEXT    NOT NULL UNIQUE,
+        name          TEXT    NOT NULL,
+        state         TEXT    NOT NULL DEFAULT 'active'
+                              CHECK (state IN ('active', 'trimmed', 'archived')),
+        added_at      INTEGER NOT NULL,
+        trimmed_at    INTEGER,
+        archived_at   INTEGER,
+        restored_at   INTEGER,
+        freed_bytes   INTEGER NOT NULL DEFAULT 0 CHECK (freed_bytes >= 0),
+        archive_path  TEXT,
+        archive_bytes INTEGER,
+        source_bytes  INTEGER,
+        file_count    INTEGER
+    );
+    CREATE TABLE project_versions (
+        project_id INTEGER NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+        folder     TEXT    NOT NULL,
+        version    TEXT    NOT NULL,
+        PRIMARY KEY (project_id, folder)
+    );
+    PRAGMA user_version = 4;";
+
+fn v1_ledger(tmp: &Path) -> (PathBuf, SqlLite) {
+    let path = tmp.join("v1.db");
+    let db = SqlLite::open(&path).unwrap();
+    db.execute_batch(V1_SCHEMA).unwrap();
+    (path, db)
+}
+
+fn v1_project(db: &SqlLite, name: &str, path: &Path, state: &str, archive_path: Option<&Path>) {
+    let text = |path: &Path| Value::Text(path.to_str().unwrap().to_string());
+    db.execute(&Query {
+        sql: "INSERT INTO projects (path, name, state, added_at, archived_at, archive_path)
+              VALUES (?, ?, ?, ?, ?, ?);"
+            .to_string(),
+        params: vec![
+            text(path),
+            Value::Text(name.to_string()),
+            Value::Text(state.to_string()),
+            Value::Integer(1_700_000_000),
+            archive_path.map_or(Value::Null, |_| Value::Integer(1_750_000_000)),
+            archive_path.map_or(Value::Null, text),
+        ],
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_v1_ledger_is_imported_with_every_state_mapped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (v1_path, v1) = v1_ledger(tmp.path());
+    v1_project(&v1, "web", &project_dir(tmp.path(), "web"), "active", None);
+    v1_project(&v1, "api", &project_dir(tmp.path(), "api"), "trimmed", None);
+    v1_project(
+        &v1,
+        "old",
+        &tmp.path().join("old"),
+        "archived",
+        Some(&tmp.path().join("old.pArchived")),
+    );
+    v1.execute_batch("INSERT INTO project_versions VALUES (1, 'C:/Tools/node', '22.1.0');")
+        .unwrap();
+    drop(v1);
+
+    pman_in(tmp.path())
+        .arg("migrate-v1")
+        .arg(&v1_path)
+        .assert()
+        .success()
+        .stderr(contains("1 vManager version pin(s) are not carried over"));
+
+    let states: Vec<(String, String)> = listed_as_json(tmp.path())
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["name"].as_str().unwrap().to_string(),
+                p["state"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        states,
+        vec![
+            ("api".to_string(), "stripped".to_string()),
+            ("old".to_string(), "archived".to_string()),
+            ("web".to_string(), "registered".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn duplicate_v1_names_abort_the_import_before_anything_is_written() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (v1_path, v1) = v1_ledger(tmp.path());
+    v1_project(&v1, "web", &project_dir(tmp.path(), "a"), "active", None);
+    v1_project(&v1, "web", &project_dir(tmp.path(), "b"), "active", None);
+    v1_project(&v1, "api", &project_dir(tmp.path(), "api"), "active", None);
+    drop(v1);
+
+    pman_in(tmp.path())
+        .arg("migrate-v1")
+        .arg(&v1_path)
+        .assert()
+        .failure()
+        .stderr(contains("nothing was imported"))
+        .stderr(contains("`web` names both"));
+
+    assert_eq!(listed_as_json(tmp.path()), serde_json::json!([]));
+}
+
+#[test]
+fn a_migration_dry_run_prints_the_import_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (v1_path, v1) = v1_ledger(tmp.path());
+    v1_project(&v1, "web", &project_dir(tmp.path(), "web"), "active", None);
+    drop(v1);
+
+    pman_in(tmp.path())
+        .args(["migrate-v1", "--dry-run"])
+        .arg(&v1_path)
+        .assert()
+        .success()
+        .stdout(contains("web"));
+
+    assert_eq!(listed_as_json(tmp.path()), serde_json::json!([]));
+}
+
+#[test]
+fn a_missing_v1_database_is_an_error_and_is_not_created() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = tmp.path().join("v1.db");
+
+    pman_in(tmp.path())
+        .arg("migrate-v1")
+        .arg(&missing)
+        .assert()
+        .failure()
+        .stderr(contains("read-only"));
+
+    assert!(!missing.exists());
+}
+
 #[test]
 fn auto_run_group_is_spelled_with_a_hyphen() {
     pman()
@@ -1141,6 +1291,7 @@ fn help_renders_at_every_level_of_the_tree() {
         vec!["auto-run", "add", "--help"],
         vec!["run", "--help"],
         vec!["list", "--help"],
+        vec!["migrate-v1", "--help"],
     ] {
         pman().args(&args).assert().success();
     }

@@ -121,14 +121,16 @@ fn destination(project: &Project) -> Result<PathBuf> {
         .parent()
         .with_context(|| format!("{} has no parent directory", project.path.display()))?;
 
-    if Path::new(&project.name).file_name() != Some(project.name.as_ref()) {
-        bail!(
-            "`{}` cannot be used as an archive file name; rename the project",
-            project.name
-        );
-    }
+    check_archive_name(&project.name)?;
 
     Ok(parent.join(format!("{}.{ARCHIVE_EXTENSION}", project.name)))
+}
+
+pub fn check_archive_name(name: &str) -> Result<()> {
+    if Path::new(name).file_name() != Some(name.as_ref()) {
+        bail!("`{name}` cannot be used as an archive file name; rename the project");
+    }
+    Ok(())
 }
 
 fn partial(destination: &Path) -> PathBuf {

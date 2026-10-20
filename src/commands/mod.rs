@@ -6,6 +6,7 @@
 
 pub mod auto_run;
 pub mod list;
+pub mod migrate_v1;
 pub mod project;
 pub mod run;
 
@@ -28,6 +29,9 @@ pub enum Commands {
     /// List all registered projects
     List(list::List),
 
+    /// Import the projects of a pManager v1 database
+    MigrateV1(migrate_v1::MigrateV1),
+
     /// Manage project registrations
     Project(project::Project),
 
@@ -40,6 +44,7 @@ impl Command for Commands {
         match self {
             Commands::AutoRun(c) => c.run(cx),
             Commands::List(c) => c.run(cx),
+            Commands::MigrateV1(c) => c.run(cx),
             Commands::Project(c) => c.run(cx),
             Commands::Run(c) => c.run(cx),
         }

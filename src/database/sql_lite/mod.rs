@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::Context as _;
-use rusqlite::{Connection, Row, params_from_iter};
+use rusqlite::{Connection, OpenFlags, Row, params_from_iter};
 
 use super::sql_builder::Query;
 use crate::error::Result;
@@ -22,6 +22,14 @@ impl SqlLite {
         let connection = Connection::open(path)
             .with_context(|| format!("could not open database {}", path.display()))?;
 
+        Ok(Self { connection })
+    }
+
+    /// Open an existing database without the right to change it. A missing
+    /// file is an error, not a new empty database.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("could not open database {} read-only", path.display()))?;
         Ok(Self { connection })
     }
 
