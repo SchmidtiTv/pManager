@@ -75,7 +75,7 @@ pub fn normalise_registered_path(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("could not resolve project path {}", path.display()))?;
 
     // Rebuilding from components drops `.` segments and trailing separators.
-    Ok(absolute.components().collect())
+    Ok(without_verbatim_prefix(absolute.components().collect()))
 }
 
 /// `canonicalize` on Windows returns `\\?\C:\...` and `\\?\UNC\...`
