@@ -1,0 +1,9 @@
+{
+	"language": "java-maven",
+	"detection": [
+		{ "type": "file", "element": "pom.xml" }
+	],
+	"strippable": [
+		{ "type": "folder", "element": "target" }
+	]
+}

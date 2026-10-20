@@ -151,4 +151,13 @@ mod tests {
         assert!(err.contains("inside the strip directory"), "got: {err}");
         assert_eq!(err.matches("\n  - ").count(), 1, "got: {err}");
     }
+
+    #[test]
+    fn the_shipped_profiles_load() {
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("strip");
+
+        let profiles = load(&shipped).unwrap();
+
+        assert_eq!(profiles.len(), 7);
+    }
 }

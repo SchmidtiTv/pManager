@@ -1,0 +1,9 @@
+{
+	"language": "rust",
+	"detection": [
+		{ "type": "file", "element": "Cargo.toml" }
+	],
+	"strippable": [
+		{ "type": "folder", "element": "target" }
+	]
+}

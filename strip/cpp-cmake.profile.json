@@ -1,0 +1,13 @@
+{
+	"language": "cpp-cmake",
+	"detection": [
+		{ "type": "file", "element": "CMakeLists.txt" }
+	],
+	"strippable": [
+		{ "type": "folder", "element": "build" },
+		{ "type": "folder", "element": "out" },
+		{ "type": "folder", "element": "cmake-build-debug" },
+		{ "type": "folder", "element": "cmake-build-release" },
+		{ "type": "folder", "element": ".vs" }
+	]
+}

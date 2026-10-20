@@ -1,0 +1,15 @@
+{
+	"language": "javascript",
+	"detection": [
+		{ "type": "file", "element": "package.json" }
+	],
+	"strippable": [
+		{ "type": "folder", "element": "node_modules" },
+		{ "type": "folder", "element": ".next" },
+		{ "type": "folder", "element": ".nuxt" },
+		{ "type": "folder", "element": ".svelte-kit" },
+		{ "type": "folder", "element": ".angular" },
+		{ "type": "folder", "element": ".turbo" },
+		{ "type": "folder", "element": ".parcel-cache" }
+	]
+}

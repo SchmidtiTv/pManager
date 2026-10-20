@@ -1,0 +1,30 @@
+[
+	{
+		"language": "python",
+		"file": "./python.profile.json"
+	},
+	{
+		"language": "javascript",
+		"file": "./javascript.profile.json"
+	},
+	{
+		"language": "java-gradle",
+		"file": "./java-gradle.profile.json"
+	},
+	{
+		"language": "java-maven",
+		"file": "./java-maven.profile.json"
+	},
+	{
+		"language": "csharp",
+		"file": "./csharp.profile.json"
+	},
+	{
+		"language": "cpp-cmake",
+		"file": "./cpp-cmake.profile.json"
+	},
+	{
+		"language": "rust",
+		"file": "./rust.profile.json"
+	}
+]
