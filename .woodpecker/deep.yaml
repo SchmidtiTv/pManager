@@ -1,0 +1,79 @@
+# Deep checks for a release candidate: every pull request into main.
+#
+# Branch flow: work lands on dev; main only moves through a dev -> main pull
+# request (merge commit), and releases are cut from main with release.yaml.
+# After the merge, fast-forward dev to main so the two stay in step:
+#
+#   git switch dev && git pull --ff-only origin main && git push
+#
+# The GitHub ruleset on main requires this workflow (ci/woodpecker/pr/deep)
+# to pass, so the gate step below is what keeps other branches out of main.
+
+when:
+  - event: pull_request
+    branch: main
+
+# The pinned cargo-deny download is an x86_64 build.
+labels:
+  platform: linux/amd64
+
+variables:
+  - &rust_image docker.io/library/rust:1.97-bookworm
+  - &cargo_deny_version 0.20.2
+
+steps:
+  - name: gate
+    image: *rust_image
+    commands:
+      - |
+        if [ "$${CI_COMMIT_SOURCE_BRANCH}" != dev ]; then
+          echo "main only takes pull requests from dev, not from $${CI_COMMIT_SOURCE_BRANCH}."
+          exit 1
+        fi
+
+  - name: lint
+    image: *rust_image
+    environment:
+      RUSTFLAGS: -D warnings
+    commands:
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc-mingw-w64-x86-64 >/dev/null
+      - rustup component add rustfmt clippy
+      - rustup target add x86_64-pc-windows-gnu
+      - cargo fmt --all --check
+      - cargo clippy --locked --all-targets --all-features
+      - cargo clippy --locked --all-targets --all-features --target x86_64-pc-windows-gnu
+
+  - name: deny
+    image: *rust_image
+    environment:
+      CARGO_DENY_VERSION: *cargo_deny_version
+    commands:
+      - curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/$${CARGO_DENY_VERSION}/cargo-deny-$${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar -xz --strip-components=1 -C /usr/local/bin
+      - cargo deny check
+
+  # Runs as an unprivileged user: some tests chmod a folder to provoke
+  # "permission denied", which root (the container default) ignores. The e2e
+  # script then drives the release binary against a throw-away sandbox.
+  - name: test
+    image: *rust_image
+    commands:
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends zsh jq >/dev/null
+      - useradd --create-home tester
+      - chown -R tester .
+      - runuser -u tester -- env HOME=/home/tester CARGO_HOME=/home/tester/.cargo RUSTUP_HOME="$${RUSTUP_HOME}" PATH="$${PATH}" RUSTFLAGS="-D warnings" zsh scripts/e2e.zsh --release
+
+  - name: build-windows
+    image: *rust_image
+    environment:
+      TARGET: x86_64-pc-windows-gnu
+    commands:
+      - apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc-mingw-w64-x86-64 >/dev/null
+      - rustup target add "$${TARGET}"
+      - cargo build --locked --release --target "$${TARGET}"
+      - |
+        for exe in "target/$${TARGET}/release/pman.exe" "target/$${TARGET}/release/pmanager.exe"; do
+          x86_64-w64-mingw32-objdump -p "$${exe}" | grep 'DLL Name'
+          if x86_64-w64-mingw32-objdump -p "$${exe}" | grep -Ei 'DLL Name: (libwinpthread|libgcc_s|libstdc\+\+)'; then
+            echo "$${exe} depends on a mingw runtime DLL."; exit 1
+          fi
+        done

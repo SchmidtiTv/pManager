@@ -1,9 +1,9 @@
-# Woodpecker counterpart of .github/workflows/ci.yml: formatting and
-# dependency checks on every push to main-v2 and on every pull request.
+# Formatting and dependency checks on every push to main or dev and on every
+# pull request. Pull requests from dev into main also run deep.yaml.
 
 when:
   - event: push
-    branch: main-v2
+    branch: [main, dev]
   - event: pull_request
 
 # The pinned cargo-deny download is an x86_64 build.

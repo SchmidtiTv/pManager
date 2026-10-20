@@ -1,6 +1,6 @@
 # Manual release pipeline.
 #
-# Start it from the Woodpecker UI ("Run pipeline" on branch main-v2) with:
+# Start it from the Woodpecker UI ("Run pipeline" on branch main) with:
 #
 #   RELEASE_VERSION     required; must equal `version` in Cargo.toml, so a
 #                       release is never cut by accident or from a stale bump
@@ -19,7 +19,7 @@
 
 when:
   - event: manual
-    branch: main-v2
+    branch: main
 
 # The pinned cargo-deny and gh downloads are x86_64 builds.
 labels:
