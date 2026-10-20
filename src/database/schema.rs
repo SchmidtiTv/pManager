@@ -25,7 +25,7 @@ pub fn apply(db: &SqlLite) -> Result<()> {
     db.execute_batch(&format!("PRAGMA user_version = {VERSION};"))
 }
 
-fn user_version(db: &SqlLite) -> Result<i64> {
+pub fn user_version(db: &SqlLite) -> Result<i64> {
     let query = Query {
         sql: "PRAGMA user_version;".to_string(),
         params: Vec::new(),
