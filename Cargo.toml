@@ -2,7 +2,9 @@
 name = "pmanager"
 version = "0.1.0"
 edition = "2024"
+description = "Ages out dormant local projects: strips rebuildable folders, then archives them"
 license = "MIT"
+repository = "https://github.com/SchmidtiTv/pManager"
 publish = false
 
 [[bin]]
