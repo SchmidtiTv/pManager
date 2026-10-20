@@ -6,5 +6,6 @@
 
 # superpowers subagent-driven-development scratch workspace
 /.superpowers
+/docs/superpowers/
 
 .DS_STORE
