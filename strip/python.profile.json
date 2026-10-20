@@ -1,0 +1,20 @@
+{
+	"language": "python",
+	"detection": [
+		{ "type": "file", "element": "pyproject.toml" },
+		{ "type": "file", "element": "requirements.txt" },
+		{ "type": "file", "element": "setup.py" },
+		{ "type": "file", "element": "Pipfile" },
+		{ "type": "folder", "element": ".venv" }
+	],
+	"strippable": [
+		{ "type": "folder", "element": ".venv" },
+		{ "type": "folder", "element": "venv" },
+		{ "type": "folder", "element": ".tox" },
+		{ "type": "folder", "element": ".nox" },
+		{ "type": "folder", "element": "__pycache__" },
+		{ "type": "folder", "element": ".pytest_cache" },
+		{ "type": "folder", "element": ".mypy_cache" },
+		{ "type": "folder", "element": ".ruff_cache" }
+	]
+}

@@ -1,0 +1,16 @@
+{
+	"language": "java-gradle",
+	"detection": [
+		{ "type": "file", "element": "build.gradle" },
+		{ "type": "file", "element": "build.gradle.kts" },
+		{ "type": "file", "element": "settings.gradle" },
+		{ "type": "file", "element": "settings.gradle.kts" }
+	],
+	"strippable": [
+		{ "type": "folder", "element": ".gradle" },
+		{ "type": "folder", "element": ".kotlin" },
+		{ "type": "folder", "element": "build" },
+		{ "type": "folder", "element": "app/build" },
+		{ "type": "folder", "element": "app/.cxx" }
+	]
+}

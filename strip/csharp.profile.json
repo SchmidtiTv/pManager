@@ -1,0 +1,11 @@
+{
+	"language": "csharp",
+	"detection": [
+		{ "type": "file", "element": "obj/project.assets.json" }
+	],
+	"strippable": [
+		{ "type": "folder", "element": "bin" },
+		{ "type": "folder", "element": "obj" },
+		{ "type": "folder", "element": ".vs" }
+	]
+}
