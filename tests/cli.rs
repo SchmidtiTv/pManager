@@ -6,6 +6,7 @@ use pmanager::database::schema;
 use pmanager::database::sql_lite::SqlLite;
 use pmanager::models::project::{self, Project};
 use pmanager::models::state::ProjectState;
+use pmanager::paths;
 use predicates::str::contains;
 
 fn pman() -> Command {
@@ -283,7 +284,7 @@ fn a_path_is_stored_in_one_normalised_form() {
     let stored = listed[0]["path"].as_str().unwrap();
     assert_eq!(
         Path::new(stored),
-        std::fs::canonicalize(&dir).unwrap(),
+        paths::normalise_project_path(&dir).unwrap(),
         "the roundabout spelling must be stored canonically"
     );
 }
