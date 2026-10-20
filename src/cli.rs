@@ -1,16 +1,14 @@
 //! The root parser, its global flags, and log initialisation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use clap::{ArgAction, Args, Parser};
+use clap::{ArgAction, Args, CommandFactory as _, FromArgMatches as _, Parser};
 use tracing_subscriber::EnvFilter;
 
 use crate::commands::Commands;
 use crate::formats::console_data::ViewType;
 
 #[derive(Parser, Debug)]
-// Without bin_name clap takes the usage line from argv[0], which is
-// `pman.exe` on Windows and `pman` everywhere else.
 #[command(
     name = "pman",
     bin_name = "pman",
@@ -24,6 +22,23 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Commands,
+}
+
+/// Parse argv. The binary ships as both `pman` and `pmanager`, so the usage
+/// line names the one that was invoked, without the `.exe` that clap would
+/// take verbatim from argv[0] on Windows.
+pub fn parse() -> Cli {
+    let mut command = Cli::command();
+    if let Some(invoked) = std::env::args_os().next().and_then(|arg0| {
+        Path::new(&arg0)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+    }) {
+        command = command.bin_name(invoked);
+    }
+
+    let matches = command.get_matches_mut();
+    Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.format(&mut command).exit())
 }
 
 #[derive(Args, Debug)]
