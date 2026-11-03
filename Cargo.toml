@@ -1,6 +1,6 @@
 [package]
 name = "pmanager"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Ages out dormant local projects: strips rebuildable folders, then archives them"
 license = "MIT"

@@ -9,7 +9,8 @@
 #
 # It checks, tests and builds the Linux and Windows archives (same layout as
 # build-windows.ps1), writes SHA256SUMS, signs it with GPG and publishes
-# everything as GitHub release v<version>. GitHub creates the tag on the
+# everything as GitHub release v<version>, described by the committed
+# docs/releases/v<version>.md. GitHub creates the tag on the
 # release commit, so the pipeline never needs push access.
 #
 # Secrets (enable them for the "manual" event only):
@@ -49,6 +50,7 @@ steps:
           200) echo "Tag v$${VERSION} already exists - bump the version in Cargo.toml."; exit 1 ;;
           *)   echo "GitHub answered $${status} while checking for tag v$${VERSION}."; exit 1 ;;
         esac
+      - test -f "docs/releases/v$${VERSION}.md" || { echo "Write the release notes to docs/releases/v$${VERSION}.md first."; exit 1; }
       - echo "$${VERSION}" > .release-version
       - rm -rf dist && mkdir dist
       - echo "Releasing pManager v$${VERSION} from $${CI_COMMIT_SHA}"
@@ -148,5 +150,5 @@ steps:
         --repo "$${CI_REPO}"
         --target "$${CI_COMMIT_SHA}"
         --title "pManager v$${VERSION}"
-        --generate-notes
+        --notes-file "docs/releases/v$${VERSION}.md"
         $${FLAGS}
