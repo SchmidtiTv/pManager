@@ -1,0 +1,14 @@
+#!/bin/sh
+# Enable once per clone: git config core.hooksPath .githooks
+
+set -eu
+
+if git diff --cached --quiet -- CHANGELOG.md; then
+    exit 0
+fi
+
+staged=$(mktemp)
+trap 'rm -f "$staged"' EXIT
+git show :CHANGELOG.md > "$staged"
+
+sh "$(git rev-parse --show-toplevel)/scripts/check-changelog.sh" "$staged"
