@@ -24,7 +24,8 @@ pub struct Restore {
 
 impl Command for Restore {
     /// The `.pproject` is deleted last, after the ledger says `registered`:
-    /// a crash in between leaves a redundant archive, never a lost project.
+    /// a crash or a failed delete leaves a redundant archive, never a lost
+    /// project.
     fn run(&self, cx: &mut Cx) -> Result<()> {
         let path = paths::normalise_registered_path(&self.path)?;
         let db = cx.db()?;
@@ -82,13 +83,15 @@ impl Command for Restore {
         db.execute(&project::update(&restored)?)
             .with_context(|| format!("could not record the restore of `{}`", project.name))?;
 
-        std::fs::remove_file(archive_path).with_context(|| {
-            format!(
-                "restored `{}` but could not delete its archive {}",
+        // The project is fully restored at this point, so a leftover archive
+        // is a warning, not a failed restore.
+        if let Err(err) = std::fs::remove_file(archive_path) {
+            tracing::warn!(
+                "restored `{}` but could not delete its archive {}; delete it by hand: {err}",
                 project.name,
                 archive_path.display()
-            )
-        })?;
+            );
+        }
 
         tracing::info!("restored `{}` to {}", project.name, path.display());
 

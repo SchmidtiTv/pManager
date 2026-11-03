@@ -1450,3 +1450,64 @@ fn an_archived_project_is_found_by_any_spelling_of_its_parent() {
 
     assert_eq!(status[0]["name"], serde_json::json!("demo"));
 }
+
+#[test]
+fn a_restore_whose_archive_cannot_be_deleted_still_succeeds_with_a_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = project_dir(tmp.path(), "demo");
+    let path = paths::normalise_project_path(&dir).unwrap();
+    let vault = tmp.path().join("vault");
+    std::fs::create_dir(&vault).unwrap();
+    let archive = vault.join("demo.pproject");
+    pmanager::archive::pack(&dir, &archive).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    seed(
+        &tmp.path().join("pmanager.db"),
+        "demo",
+        &path,
+        ProjectState::Archived {
+            archive_path: archive.clone(),
+        },
+    );
+
+    // Readable, but the delete is refused.
+    #[cfg(windows)]
+    let lock = {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_SHARE_READ: u32 = 1;
+        std::fs::File::options()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&archive)
+            .unwrap()
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    let result = pman_project(tmp.path(), "restore", &path).assert();
+
+    #[cfg(windows)]
+    drop(lock);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let assert = result
+        .success()
+        .stderr(contains("could not delete its archive"));
+    let restored: serde_json::Value =
+        serde_json::from_slice(&assert.get_output().stdout).expect("stdout is JSON");
+    assert_matches_schema("restore.schema.json", &restored);
+    assert!(path.join("main.rs").is_file());
+    assert!(
+        archive.is_file(),
+        "the archive is left for the user to delete"
+    );
+    assert_eq!(state_of(tmp.path(), "demo"), "registered");
+}
