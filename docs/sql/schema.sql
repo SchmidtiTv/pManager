@@ -11,8 +11,8 @@
 -- user_version check in schema.rs instead.
 
 CREATE TABLE IF NOT EXISTS projects (
-    -- `pman restore <name>` looks a project up by name, so it identifies
-    -- exactly one row. Supplied by the user during `pman project add`.
+    -- Unique because the `.pproject` archive is named after it. Supplied by
+    -- the user during `pman project add`.
     name           TEXT    NOT NULL UNIQUE,
 
     -- Compared byte for byte. Registration normalises the path first: on

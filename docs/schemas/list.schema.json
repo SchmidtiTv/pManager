@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "list.schema.json",
+  "description": "stdout of `pman list -o json`: one object per registered project, sorted by name.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string", "minLength": 1 },
+      "state": { "enum": ["registered", "stripped", "archived"] },
+      "idle": { "type": "integer", "description": "Whole days since last_change_at as stored in the ledger." },
+      "path": { "type": "string", "minLength": 1 }
+    },
+    "required": ["name", "state", "idle", "path"],
+    "additionalProperties": false
+  }
+}

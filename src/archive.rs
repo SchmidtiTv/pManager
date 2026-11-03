@@ -2,12 +2,14 @@
 //!
 //! The format is plain 7z with LZMA2 and no password. Decoding is not behind
 //! a cargo feature in `sevenz-rust2` -- only the encoder is -- so [`verify`]
-//! works with the trimmed feature set in `Cargo.toml`, and a future
-//! `pman restore` will need no manifest change either.
+//! and [`unpack`] work with the trimmed feature set in `Cargo.toml`.
 
-use std::path::Path;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, ensure};
+use sevenz_rust2::ArchiveEntry;
 use walkdir::WalkDir;
 
 use crate::error::Result;
@@ -19,6 +21,40 @@ use crate::error::Result;
 pub fn pack(root: &Path, dest: &Path) -> Result<()> {
     sevenz_rust2::compress_to_path(root, dest)
         .with_context(|| format!("could not pack {} into {}", root.display(), dest.display()))
+}
+
+/// Unpack `archive` into `dest`, creating it.
+///
+/// Files get the current time, not the packed mtimes: a restored project must
+/// not look idle, or the next `pman run` archives it straight away.
+pub fn unpack(archive: &Path, dest: &Path) -> Result<()> {
+    sevenz_rust2::decompress_file_with_extract_fn(archive, dest, write_entry).with_context(|| {
+        format!(
+            "could not unpack {} into {}",
+            archive.display(),
+            dest.display()
+        )
+    })
+}
+
+// The signature is fixed by `sevenz-rust2`, which has already checked that
+// `dest` stays inside the destination folder.
+#[allow(clippy::ptr_arg)]
+fn write_entry(
+    entry: &ArchiveEntry,
+    reader: &mut dyn Read,
+    dest: &PathBuf,
+) -> std::result::Result<bool, sevenz_rust2::Error> {
+    if entry.is_directory() {
+        std::fs::create_dir_all(dest)?;
+        return Ok(true);
+    }
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::io::copy(reader, &mut File::create(dest)?)?;
+    Ok(true)
 }
 
 /// The number of entries [`pack`] will write for `root`.
@@ -64,7 +100,7 @@ pub fn verify(archive: &Path, expected: usize) -> Result<()> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{entry_count, pack, verify};
+    use super::{entry_count, pack, unpack, verify};
 
     fn tree(root: &Path) {
         std::fs::create_dir_all(root.join("src").join("deep")).unwrap();
@@ -151,6 +187,40 @@ mod tests {
         assert!(
             verify(&dest, expected).is_err(),
             "a half-written archive must never be accepted as complete"
+        );
+    }
+
+    #[test]
+    fn an_unpacked_tree_matches_the_original_and_carries_fresh_mtimes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        tree(&root);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(200 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(root.join("main.rs"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let dest = tmp.path().join("project.pproject");
+        pack(&root, &dest).unwrap();
+
+        let restored = tmp.path().join("restored");
+        unpack(&dest, &restored).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(restored.join("src").join("deep").join("b.rs")).unwrap(),
+            "// b"
+        );
+        verify(&dest, entry_count(&restored).unwrap()).unwrap();
+        let modified = std::fs::metadata(restored.join("main.rs"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(
+            modified > old,
+            "the packed 200-day-old mtime must not come back"
         );
     }
 

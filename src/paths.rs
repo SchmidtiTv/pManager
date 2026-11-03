@@ -63,9 +63,9 @@ pub fn normalise_project_path(path: &Path) -> Result<PathBuf> {
 }
 
 /// Like [`normalise_project_path`], but for a project that may already be
-/// gone from disk, e.g. deleted by hand after registration. A missing path
-/// can only be made absolute, not canonical, so it matches the stored path
-/// only when spelled the way it was registered.
+/// gone from disk, e.g. archived. A missing folder is resolved through its
+/// parent, which still exists for an archive because the `.pproject` sits
+/// there; only the last segment must then be spelled as registered.
 pub fn normalise_registered_path(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return normalise_project_path(path);
@@ -73,9 +73,18 @@ pub fn normalise_registered_path(path: &Path) -> Result<PathBuf> {
 
     let absolute = std::path::absolute(path)
         .with_context(|| format!("could not resolve project path {}", path.display()))?;
-
     // Rebuilding from components drops `.` segments and trailing separators.
-    Ok(without_verbatim_prefix(absolute.components().collect()))
+    let absolute: PathBuf = absolute.components().collect();
+
+    if let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name())
+        && parent.is_dir()
+    {
+        let parent = std::fs::canonicalize(parent)
+            .with_context(|| format!("could not resolve {}", parent.display()))?;
+        return Ok(without_verbatim_prefix(parent.join(name)));
+    }
+
+    Ok(without_verbatim_prefix(absolute))
 }
 
 /// `canonicalize` on Windows returns `\\?\C:\...` and `\\?\UNC\...`
@@ -158,6 +167,18 @@ mod tests {
         let with_trailing_dot = normalise_registered_path(&gone.join(".")).unwrap();
 
         assert_eq!(with_trailing_dot, gone, "`.` and trailing separators go");
+    }
+
+    #[test]
+    fn a_vanished_path_is_resolved_through_its_existing_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        let canonical_tmp = normalise_project_path(tmp.path()).unwrap();
+
+        let roundabout =
+            normalise_registered_path(&tmp.path().join("sub").join("..").join("gone")).unwrap();
+
+        assert_eq!(roundabout, canonical_tmp.join("gone"));
     }
 
     #[test]

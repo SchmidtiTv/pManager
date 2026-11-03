@@ -3,6 +3,7 @@
 use std::fmt;
 
 use anyhow::ensure;
+use chrono::NaiveDate;
 use clap::ValueEnum;
 
 use crate::error::Result;
@@ -21,6 +22,9 @@ pub enum Cell {
     Bool(bool),
     Days(i64),
     Bytes(u64),
+    Date(NaiveDate),
+    /// No value: `-` in a table, `null` in JSON.
+    Empty,
 }
 
 impl fmt::Display for Cell {
@@ -31,6 +35,8 @@ impl fmt::Display for Cell {
             Cell::Bool(flag) => write!(f, "{flag}"),
             Cell::Days(days) => write!(f, "{days}d"),
             Cell::Bytes(bytes) => write!(f, "{}", human_size(*bytes)),
+            Cell::Date(date) => write!(f, "{}", date.format("%Y-%m-%d")),
+            Cell::Empty => write!(f, "-"),
         }
     }
 }

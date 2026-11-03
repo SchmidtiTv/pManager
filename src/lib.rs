@@ -26,7 +26,7 @@ pub fn run() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             error::report(&err);
-            ExitCode::FAILURE
+            error::exit_code(&err)
         }
     }
 }

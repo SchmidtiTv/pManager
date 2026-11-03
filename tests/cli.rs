@@ -221,12 +221,14 @@ fn project_group_help_lists_its_subcommands() {
         .stdout(contains("Commands:"))
         .stdout(contains("add"))
         .stdout(contains("remove"))
-        .stdout(contains("cleanup"));
+        .stdout(contains("cleanup"))
+        .stdout(contains("status"))
+        .stdout(contains("restore"));
 }
 
 #[test]
-fn project_group_exposes_three_nested_subcommands() {
-    for leaf in ["add", "remove", "cleanup"] {
+fn project_group_exposes_five_nested_subcommands() {
+    for leaf in ["add", "remove", "cleanup", "status", "restore"] {
         pman()
             .args(["project", leaf, "--help"])
             .assert()
@@ -1273,6 +1275,8 @@ fn help_renders_at_every_level_of_the_tree() {
         vec!["--help"],
         vec!["project", "--help"],
         vec!["project", "add", "--help"],
+        vec!["project", "status", "--help"],
+        vec!["project", "restore", "--help"],
         vec!["auto-run", "--help"],
         vec!["auto-run", "add", "--help"],
         vec!["run", "--help"],
@@ -1281,4 +1285,168 @@ fn help_renders_at_every_level_of_the_tree() {
     ] {
         pman().args(&args).assert().success();
     }
+}
+
+// ---------------------------------------------------------------------------
+// `pman project status` / `pman project restore`
+// ---------------------------------------------------------------------------
+
+fn assert_matches_schema(schema_file: &str, output: &serde_json::Value) {
+    let schema_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs")
+        .join("schemas")
+        .join(schema_file);
+    let schema: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&schema_path).unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+
+    let errors: Vec<String> = validator
+        .iter_errors(output)
+        .map(|err| err.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{schema_file}: {errors:?} in {output}");
+}
+
+fn json_of(command: &mut Command) -> serde_json::Value {
+    let output = command.assert().success().get_output().stdout.clone();
+    serde_json::from_slice(&output).expect("stdout is JSON")
+}
+
+fn pman_project(tmp: &Path, leaf: &str, path: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = pman_in(tmp);
+    command
+        .arg("--strip-dir")
+        .arg(tmp.join("strip"))
+        .args(["project", leaf, "-o", "json"])
+        .arg(path);
+    command
+}
+
+/// An archived Python project. Returns its folder as WebStorm would send it:
+/// canonical, with forward slashes.
+fn archived_project(tmp: &Path) -> String {
+    strip_dir(tmp);
+    let dir = python_project(tmp, "demo");
+    let path = paths::normalise_project_path(&dir).unwrap();
+    age(&dir, 200);
+    pman_run(tmp).assert().success();
+    assert_eq!(state_of(tmp, "demo"), "archived");
+
+    path.to_str().unwrap().replace('\\', "/")
+}
+
+#[test]
+fn list_as_json_matches_its_schema() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("pmanager.db");
+    seed(&db_path, "demo", "C:/dev/demo", ProjectState::Registered);
+
+    assert_matches_schema("list.schema.json", &listed_as_json(tmp.path()));
+}
+
+#[test]
+fn status_of_an_active_project_names_the_next_strip() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+    age(&dir, 10);
+
+    let status = json_of(&mut pman_project(tmp.path(), "status", &dir));
+
+    assert_matches_schema("status.schema.json", &status);
+    assert_eq!(status[0]["idle"], serde_json::json!(10));
+    assert_eq!(status[0]["dirty"], serde_json::json!(false));
+    assert_eq!(status[0]["next_action"], serde_json::json!("strip"));
+    assert!(status[0]["next_action_at"].is_string());
+    assert_eq!(status[0]["reason"], serde_json::Value::Null);
+}
+
+#[test]
+fn status_of_an_archived_project_is_found_by_its_original_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = archived_project(tmp.path());
+
+    let status = json_of(&mut pman_project(tmp.path(), "status", &path));
+
+    assert_matches_schema("status.schema.json", &status);
+    assert_eq!(status[0]["state"], serde_json::json!("archived"));
+    assert_eq!(status[0]["next_action"], serde_json::json!("none"));
+    assert_eq!(status[0]["reason"], serde_json::json!("already archived"));
+    assert_eq!(status[0]["dirty"], serde_json::Value::Null);
+}
+
+#[test]
+fn an_unregistered_path_has_its_own_exit_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let gone = tmp.path().join("gone").to_str().unwrap().replace('\\', "/");
+
+    for leaf in ["status", "restore"] {
+        pman_project(tmp.path(), leaf, &gone)
+            .assert()
+            .code(i32::from(pmanager::error::NOT_REGISTERED_EXIT_CODE))
+            .stdout(predicates::str::is_empty())
+            .stderr(contains("no project is registered at"));
+    }
+}
+
+#[test]
+fn a_restored_project_is_back_registered_and_not_archived_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = archived_project(tmp.path());
+
+    let restored = json_of(&mut pman_project(tmp.path(), "restore", &path));
+
+    assert_matches_schema("restore.schema.json", &restored);
+    assert_eq!(restored[0]["state"], serde_json::json!("registered"));
+    assert!(Path::new(&path).join("main.py").is_file());
+    assert!(!tmp.path().join("demo.pproject").exists());
+    assert!(!tmp.path().join("demo.part").exists());
+
+    let plan = json_of(pman_run(tmp.path()).args(["--dry-run", "-o", "json"]));
+    assert_eq!(
+        plan[0]["action"],
+        serde_json::json!("none"),
+        "the unpacked files must not carry their 200-day-old mtimes: {plan}"
+    );
+}
+
+#[test]
+fn restore_never_overwrites_an_existing_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = archived_project(tmp.path());
+    std::fs::create_dir(&path).unwrap();
+
+    pman_project(tmp.path(), "restore", &path)
+        .assert()
+        .failure()
+        .stderr(contains("already exists"));
+
+    assert!(tmp.path().join("demo.pproject").is_file());
+    assert_eq!(state_of(tmp.path(), "demo"), "archived");
+}
+
+#[test]
+fn restoring_a_project_that_is_not_archived_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    strip_dir(tmp.path());
+    let dir = python_project(tmp.path(), "demo");
+
+    pman_project(tmp.path(), "restore", &dir)
+        .assert()
+        .failure()
+        .stderr(contains("not archived"));
+}
+
+#[test]
+fn an_archived_project_is_found_by_any_spelling_of_its_parent() {
+    let tmp = tempfile::tempdir().unwrap();
+    archived_project(tmp.path());
+    // Not canonicalised: on Windows the temp dir may be an 8.3 short name.
+    let as_typed = tmp.path().join("sub").join("..").join("demo");
+    std::fs::create_dir(tmp.path().join("sub")).unwrap();
+
+    let status = json_of(&mut pman_project(tmp.path(), "status", &as_typed));
+
+    assert_eq!(status[0]["name"], serde_json::json!("demo"));
 }

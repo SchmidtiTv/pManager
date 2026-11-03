@@ -5,7 +5,7 @@
 //! below is covered by unit tests with no temporary directory and no
 //! back-dated mtimes.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 
 use crate::models::project::Project;
 use crate::models::state::ProjectState;
@@ -14,6 +14,11 @@ use crate::pass::facts::Facts;
 const STRIP_AFTER_DAYS: i64 = 60;
 const ARCHIVE_AFTER_DAYS: i64 = 120;
 const ARCHIVE_DIRTY_AFTER_DAYS: i64 = 160;
+const THRESHOLD_DAYS: [i64; 3] = [
+    STRIP_AFTER_DAYS,
+    ARCHIVE_AFTER_DAYS,
+    ARCHIVE_DIRTY_AFTER_DAYS,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -115,13 +120,41 @@ pub fn decide(project: &Project, facts: Option<&Facts>, now: DateTime<Utc>) -> A
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Next {
+    Due { action: Action, at: DateTime<Utc> },
+    Nothing { reason: Reason },
+}
+
+/// The first action [`decide`] will return from `now` on, assuming no further
+/// activity. Something already due is due at `now`.
+pub fn next_action(project: &Project, facts: Option<&Facts>, now: DateTime<Utc>) -> Next {
+    let action = decide(project, facts, now);
+    let Action::Nothing { reason } = action else {
+        return Next::Due { action, at: now };
+    };
+    let Some(facts) = facts else {
+        return Next::Nothing { reason };
+    };
+
+    THRESHOLD_DAYS
+        .iter()
+        .map(|days| facts.last_change_at + Duration::days(*days))
+        .filter(|at| *at > now)
+        .find_map(|at| {
+            let action = decide(project, Some(facts), at);
+            (!action.is_nothing()).then_some(Next::Due { action, at })
+        })
+        .unwrap_or(Next::Nothing { reason })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use chrono::{DateTime, Duration, TimeZone as _, Utc};
 
-    use super::{Action, Reason, decide};
+    use super::{Action, Next, Reason, decide, next_action};
     use crate::models::project::Project;
     use crate::models::state::ProjectState;
     use crate::models::stripping_profile::{Element, ElementType, StrippingProfile};
@@ -329,6 +362,74 @@ mod tests {
             ),
             Action::Strip,
             "stripped files are regenerable, so uncommitted work is not at risk"
+        );
+    }
+
+    fn due(action: Action, idle_days_at: i64, idle_days_now: i64) -> Next {
+        Next::Due {
+            action,
+            at: now() - Duration::days(idle_days_now) + Duration::days(idle_days_at),
+        }
+    }
+
+    #[test]
+    fn an_active_project_with_a_profile_is_stripped_next_at_sixty_days() {
+        assert_eq!(
+            next_action(
+                &project(ProjectState::Registered),
+                Some(&facts(10, false, true)),
+                now()
+            ),
+            due(Action::Strip, 60, 10)
+        );
+    }
+
+    #[test]
+    fn a_project_no_profile_recognises_is_archived_next() {
+        assert_eq!(
+            next_action(
+                &project(ProjectState::Registered),
+                Some(&facts(70, false, false)),
+                now()
+            ),
+            due(Action::Archive, 120, 70)
+        );
+    }
+
+    #[test]
+    fn a_dirty_stripped_project_is_archived_next_at_a_hundred_and_sixty_days() {
+        assert_eq!(
+            next_action(
+                &project(ProjectState::Stripped),
+                Some(&facts(90, true, true)),
+                now()
+            ),
+            due(Action::Archive, 160, 90)
+        );
+    }
+
+    #[test]
+    fn an_overdue_action_is_due_now() {
+        assert_eq!(
+            next_action(
+                &project(ProjectState::Registered),
+                Some(&facts(130, false, true)),
+                now()
+            ),
+            Next::Due {
+                action: Action::StripAndArchive,
+                at: now()
+            }
+        );
+    }
+
+    #[test]
+    fn an_archived_project_has_no_next_action() {
+        assert_eq!(
+            next_action(&archived(), None, now()),
+            Next::Nothing {
+                reason: Reason::AlreadyArchived
+            }
         );
     }
 }

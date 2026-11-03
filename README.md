@@ -37,6 +37,8 @@ registration.
 | `pman project add <PATH> [--name <NAME>]` | Register a project (name is prompted if omitted) |
 | `pman project remove <PATH>` | Unregister a project; files and archives stay on disk |
 | `pman project cleanup` | Drop entries whose folder no longer exists |
+| `pman project status <PATH>` | Show state, idle days, git dirtiness and the next due action, measured live |
+| `pman project restore <PATH>` | Unpack an archived project to its original path; it becomes `registered` |
 | `pman run [--dry-run]` | Strip/archive every project that is due |
 | `pman auto-run add` | Install the scheduled background run |
 | `pman auto-run remove` | Remove the scheduled background run |
@@ -44,6 +46,16 @@ registration.
 
 Global options: `-v`/`-vv`, `-q`, `--db <PATH>`, `--strip-dir <PATH>`
 (or `PMANAGER_STRIP_DIR`), `-o table|json`.
+
+## Scripting
+
+`-o json` output of `list`, `project status` and `project restore` follows the
+schemas in `docs/schemas/`. Data goes to stdout, logs and errors to stderr.
+Exit codes: `0` success, `2` invalid arguments, `3` the path is not
+registered, `1` any other error.
+
+The database defaults to `pmanager/pmanager.db` in the user data directory
+(`%APPDATA%` on Windows); only `strip/` is looked up next to the executable.
 
 ## Strip profiles
 

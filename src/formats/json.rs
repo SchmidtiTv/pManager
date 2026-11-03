@@ -41,6 +41,8 @@ fn value(cell: &Cell) -> Value {
         // Likewise the unit: only the table renderer applies it, so a
         // machine reading this gets a byte count it can add up.
         Cell::Bytes(bytes) => Value::Number((*bytes).into()),
+        Cell::Date(date) => Value::String(date.format("%Y-%m-%d").to_string()),
+        Cell::Empty => Value::Null,
     }
 }
 

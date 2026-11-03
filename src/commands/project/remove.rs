@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use anyhow::bail;
 use clap::Args;
 
+use super::find_registered;
 use crate::commands::Command;
 use crate::context::Cx;
 use crate::error::Result;
@@ -23,13 +23,7 @@ impl Command for Remove {
         let path = paths::normalise_registered_path(&self.path)?;
 
         let db = cx.db()?;
-        let Some(project) = db
-            .query(&project::select_by_path(&path)?, project::from_row)?
-            .into_iter()
-            .next()
-        else {
-            bail!("no project is registered at {}", path.display());
-        };
+        let project = find_registered(db, &path)?;
 
         db.execute(&project::delete_by_path(&path)?)?;
 
