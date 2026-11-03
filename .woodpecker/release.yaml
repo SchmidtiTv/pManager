@@ -10,8 +10,9 @@
 # It checks, tests and builds the Linux and Windows archives (same layout as
 # build-windows.ps1), writes SHA256SUMS, signs it with GPG and publishes
 # everything as GitHub release v<version>, described by the committed
-# docs/releases/v<version>.md. GitHub creates the tag on the
-# release commit, so the pipeline never needs push access.
+# docs/releases/v<version>.md. CHANGELOG.md must already hold a dated
+# [<version>] section. The tag v<version> is created on the release commit
+# through the GitHub API, so the pipeline never needs git push access.
 #
 # Secrets (enable them for the "manual" event only):
 #   github_token        token with contents: write on this repository
@@ -51,6 +52,8 @@ steps:
           *)   echo "GitHub answered $${status} while checking for tag v$${VERSION}."; exit 1 ;;
         esac
       - test -f "docs/releases/v$${VERSION}.md" || { echo "Write the release notes to docs/releases/v$${VERSION}.md first."; exit 1; }
+      - sh scripts/check-changelog.sh CHANGELOG.md
+      - grep -q "^## \[$${VERSION}\] - " CHANGELOG.md || { echo "CHANGELOG.md has no \"## [$${VERSION}] - YYYY-MM-DD\" section; move the [Unreleased] entries there."; exit 1; }
       - echo "$${VERSION}" > .release-version
       - rm -rf dist && mkdir dist
       - echo "Releasing pManager v$${VERSION} from $${CI_COMMIT_SHA}"
@@ -145,10 +148,13 @@ steps:
       - FLAGS=""
       - if [ "$${RELEASE_DRAFT:-false}" = true ]; then FLAGS="$${FLAGS} --draft"; fi
       - if [ "$${RELEASE_PRERELEASE:-false}" = true ]; then FLAGS="$${FLAGS} --prerelease"; fi
+      # Tag first, so v<version> exists even for a draft release, which
+      # would otherwise only create it once published.
+      - gh api "repos/$${CI_REPO}/git/refs" -f ref="refs/tags/v$${VERSION}" -f sha="$${CI_COMMIT_SHA}"
       - >
         gh release create "v$${VERSION}" dist/*
         --repo "$${CI_REPO}"
-        --target "$${CI_COMMIT_SHA}"
+        --verify-tag
         --title "pManager v$${VERSION}"
         --notes-file "docs/releases/v$${VERSION}.md"
         $${FLAGS}

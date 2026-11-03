@@ -22,6 +22,11 @@ steps:
       - rustup component add rustfmt
       - cargo fmt --all --check
 
+  - name: changelog
+    image: *rust_image
+    commands:
+      - sh scripts/check-changelog.sh CHANGELOG.md
+
   # Reads Cargo metadata only — nothing is compiled.
   - name: deny
     image: *rust_image

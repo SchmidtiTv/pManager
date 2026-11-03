@@ -102,3 +102,14 @@ cargo fmt --check
 ```
 
 See `docs/adding-a-command.md` for adding a subcommand.
+
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and is checked by `scripts/check-changelog.sh`, in CI and in a pre-commit
+hook. Enable the hook once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+A release needs a dated `## [<version>] - YYYY-MM-DD` section in the changelog
+and `docs/releases/v<version>.md`; the release pipeline creates the tag.
